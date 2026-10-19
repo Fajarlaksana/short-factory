@@ -1,0 +1,163 @@
+name: TEST - HuggingFace Only Video Generation
+
+# This workflow tests video generation using ONLY HuggingFace as the AI provider
+# - No Gemini, Groq, or OpenRouter (those keys are not provided)
+# - No regeneration attempts (max_regen=0)
+# - Full enhancement verification
+# - Detailed logging for debugging
+
+on:
+  workflow_dispatch:
+    inputs:
+      category:
+        description: 'Video category (leave empty for AI to decide)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  test-huggingface-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          
+          # Install system dependencies for video processing
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg imagemagick fonts-dejavu-core fonts-liberation
+          
+          # Fix ImageMagick policy for video generation
+          sudo sed -i 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/' /etc/ImageMagick-6/policy.xml || true
+          sudo sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@*"/' /etc/ImageMagick-6/policy.xml || true
+      
+      - name: Create directories
+        run: |
+          mkdir -p assets/backgrounds assets/broll assets/music assets/sfx assets/fonts
+          mkdir -p output cache data/persistent test_output
+      
+      - name: Restore Persistent State
+        run: |
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=persistent-state&per_page=1" \
+            | jq -r '.artifacts[0].id')
+          
+          if [ "$ARTIFACT_ID" != "null" ] && [ -n "$ARTIFACT_ID" ]; then
+            curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+              -o /tmp/state.zip
+            unzip -o /tmp/state.zip -d data/persistent/ 2>/dev/null || true
+            echo "[OK] Restored patterns from artifact $ARTIFACT_ID"
+          else
+            echo "[INFO] No previous state found - starting fresh"
+          fi
+        continue-on-error: true
+
+      - name: Pre-fetch B-roll
+        run: python fetch_broll.py || true
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        continue-on-error: true
+
+      - name: Generate Video with HuggingFace ONLY
+        env:
+          # ONLY HuggingFace key - forces HuggingFace as primary provider
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          # Explicitly NOT providing: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY
+          PYTHONUNBUFFERED: "1"
+          INPUT_CATEGORY: ${{ github.event.inputs.category }}
+        run: |
+          echo "=============================================="
+          echo "  HUGGINGFACE-ONLY VIDEO GENERATION TEST"
+          echo "=============================================="
+          echo "Provider: HuggingFace Inference API ONLY"
+          echo "Regeneration: DISABLED (max_regen=0)"
+          echo "Category: ${{ github.event.inputs.category || 'AI decides' }}"
+          echo "=============================================="
+          echo ""
+          
+          # Run the test script
+          python scripts/test_huggingface_only.py
+
+      - name: Upload Generated Video
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: huggingface-test-video-${{ github.run_number }}
+          path: |
+            test_output/*.mp4
+            output/*.mp4
+          retention-days: 7
+          if-no-files-found: ignore
+      
+      - name: Upload Video Metadata and Logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: huggingface-test-metadata-${{ github.run_number }}
+          path: |
+            test_output/*.json
+            test_output/*.txt
+            data/persistent/*.json
+          retention-days: 7
+          if-no-files-found: ignore
+      
+      - name: Save Persistent State
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: persistent-state
+          path: data/persistent/
+          retention-days: 30
+          if-no-files-found: ignore
+          overwrite: true
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "## HuggingFace-Only Test Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Provider:** HuggingFace Inference API ONLY" >> $GITHUB_STEP_SUMMARY
+          echo "- **Regeneration:** Disabled (0 attempts)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Purpose:** Test enhancements with fresh API quota" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download Results" >> $GITHUB_STEP_SUMMARY
+          echo "1. Go to **Actions** -> **This workflow run**" >> $GITHUB_STEP_SUMMARY
+          echo "2. Scroll down to **Artifacts**" >> $GITHUB_STEP_SUMMARY
+          echo "3. Download **huggingface-test-video-${{ github.run_number }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f test_output/video_metadata.json ]; then
+            echo "### Video Metadata" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat test_output/video_metadata.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f test_output/enhancement_report.json ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Enhancement Report" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat test_output/enhancement_report.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Files Generated" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -la test_output/ 2>/dev/null || echo "No files in test_output"
+          ls -la output/*.mp4 2>/dev/null || echo "No videos in output"
+          echo '```' >> $GITHUB_STEP_SUMMARY

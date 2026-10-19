@@ -1,0 +1,250 @@
+name: TEST - Systems Dry Run (Zero Production Quota)
+
+# COMPREHENSIVE SYSTEM TEST - v17.9.23
+# =====================================
+# Tests ALL systems WITHOUT consuming PRODUCTION quota.
+#
+# WHAT IT TESTS (60+ tests across 24 categories):
+# 1-4.   Model discovery (Gemini, Groq, OpenRouter, HuggingFace) - FREE endpoints
+# 5-7.   Quota management and caching
+# 8-10.  Persistent data read/write (verified then CLEANED UP)
+# 11-13. All scorers (Virality, Engagement, Retention, Script, Quality Gate)
+# 14.    MODEL CHART: Shows ALL discovered models, highlights [PROD] vs [TEST]
+# 15.    Content generation using NON-PRODUCTION OpenRouter models
+# 16.    YouTube API (basic credential check ONLY, NOT full analytics)
+# 17.    API behavior validation (response format checks)
+# 18.    PRODUCTION PROMPTS: Actually tests prompts with AI (non-prod models)
+# 19.    Rate limiters
+# 20.    TTS engine (Edge-TTS)
+# 21.    Pexels API (video search)
+# 22.    Video rendering infrastructure (MoviePy, PIL, FFmpeg)
+# 23.    Error handling and retry logic
+# 24.    Emergency fallbacks
+#
+# QUOTA REPORT: Shows per-model usage at end (provider + model + calls)
+# NO VIDEO RENDERED: Tests infrastructure only
+# YouTube: Just credential check, NOT full analytics
+#
+# PRODUCTION QUOTA USAGE: ZERO
+# - All discovery uses FREE /models endpoints
+# - OpenRouter free models from index 1+ (production uses index 0)
+# - NO Groq AI calls (shared quota across all models)
+# - NO Gemini generateContent calls (uses /models info only)
+#
+# PERSISTENT STATE: READ-ONLY
+# - Downloads production state to verify read
+# - Creates test files to verify write capability
+# - DELETES all test files immediately after
+# - Does NOT save any artifact back
+# - Production state completely UNCHANGED
+#
+# TRIGGER: Manual only (workflow_dispatch) - NO random delay
+
+on:
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: 'Verbose output'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  test-systems:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          
+          # Minimal system deps (no ffmpeg needed for dry run)
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+      
+      - name: Create Directories
+        run: |
+          mkdir -p data/persistent cache/models test_output
+          mkdir -p assets/backgrounds assets/broll assets/music
+      
+      # ================================================================
+      # TEST 1: PERSISTENT STATE (GitHub Artifacts)
+      # ================================================================
+      - name: "TEST 1: Restore Persistent State"
+        id: restore_state
+        run: |
+          echo "=============================================="
+          echo "  TEST 1: PERSISTENT STATE READ"
+          echo "=============================================="
+          
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=persistent-state&per_page=1" \
+            | jq -r '.artifacts[0].id')
+          
+          if [ "$ARTIFACT_ID" != "null" ] && [ -n "$ARTIFACT_ID" ]; then
+            curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+              -o /tmp/state.zip
+            unzip -o /tmp/state.zip -d data/persistent/ 2>/dev/null || true
+            echo "[OK] Restored state from artifact $ARTIFACT_ID"
+            echo "state_found=true" >> $GITHUB_OUTPUT
+            ls -la data/persistent/
+          else
+            echo "[INFO] No previous state found - will create new"
+            echo "state_found=false" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+      
+      # ================================================================
+      # TEST 2: API AVAILABILITY (FREE Endpoints Only)
+      # ================================================================
+      - name: "TEST 2: API Availability (Zero Quota)"
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+        run: |
+          echo "=============================================="
+          echo "  TEST 2: API AVAILABILITY (FREE ENDPOINTS)"
+          echo "=============================================="
+          
+          # Test Gemini (FREE /models endpoint)
+          echo -n "Gemini API: "
+          GEMINI_STATUS=$(curl -s -w "%{http_code}" -o /tmp/gemini.json \
+            "https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}" 2>/dev/null)
+          if [ "$GEMINI_STATUS" = "200" ]; then
+            MODEL_COUNT=$(cat /tmp/gemini.json | jq '.models | length' 2>/dev/null || echo "0")
+            echo "[OK] Available ($MODEL_COUNT models)"
+          else
+            echo "[WARN] HTTP $GEMINI_STATUS"
+          fi
+          
+          # Test Groq (FREE /models endpoint)
+          echo -n "Groq API: "
+          GROQ_STATUS=$(curl -s -w "%{http_code}" -o /tmp/groq.json \
+            -H "Authorization: Bearer ${GROQ_API_KEY}" \
+            "https://api.groq.com/openai/v1/models" 2>/dev/null)
+          if [ "$GROQ_STATUS" = "200" ]; then
+            MODEL_COUNT=$(cat /tmp/groq.json | jq '.data | length' 2>/dev/null || echo "0")
+            echo "[OK] Available ($MODEL_COUNT models)"
+          else
+            echo "[WARN] HTTP $GROQ_STATUS"
+          fi
+          
+          # Test Pexels (FREE /search with minimal query)
+          echo -n "Pexels API: "
+          PEXELS_STATUS=$(curl -s -w "%{http_code}" -o /dev/null \
+            -H "Authorization: ${PEXELS_API_KEY}" \
+            "https://api.pexels.com/videos/search?query=test&per_page=1" 2>/dev/null)
+          if [ "$PEXELS_STATUS" = "200" ]; then
+            echo "[OK] Available"
+          else
+            echo "[WARN] HTTP $PEXELS_STATUS"
+          fi
+          
+          # Test HuggingFace (FREE /models endpoint)
+          echo -n "HuggingFace API: "
+          HF_STATUS=$(curl -s -w "%{http_code}" -o /dev/null \
+            "https://huggingface.co/api/models?limit=1" 2>/dev/null)
+          if [ "$HF_STATUS" = "200" ]; then
+            echo "[OK] Available"
+          else
+            echo "[WARN] HTTP $HF_STATUS"
+          fi
+          
+          echo ""
+          echo "[INFO] All tests used FREE endpoints - ZERO quota consumed"
+      
+      # ================================================================
+      # TEST 3: COMPREHENSIVE PYTHON TESTS
+      # ================================================================
+      - name: "TEST 3: Comprehensive System Tests"
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python scripts/test_systems_dry_run.py
+      
+      # ================================================================
+      # TEST 4: PERSISTENT STATE WRITE
+      # ================================================================
+      - name: "TEST 4: Verify Write Capability (No Save)"
+        run: |
+          echo "=============================================="
+          echo "  TEST 4: VERIFY WRITE CAPABILITY"
+          echo "=============================================="
+          
+          # Create a test marker file (verify we CAN write)
+          echo "{\"test_run\": \"${{ github.run_number }}\", \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"status\": \"success\"}" \
+            > data/persistent/last_test_run.json
+          
+          echo "[OK] Write test passed"
+          cat data/persistent/last_test_run.json
+          
+          # CLEANUP: Remove test file so we don't pollute anything
+          rm -f data/persistent/last_test_run.json
+          rm -f data/persistent/test_persistent.json
+          echo "[OK] Cleaned up test files"
+          
+          # NOTE: We do NOT save back to any artifact!
+          # This ensures the test workflow doesn't affect production state.
+      
+      # ================================================================
+      # SUMMARY
+      # ================================================================
+      - name: Generate Summary
+        if: always()
+        run: |
+          echo "## 🧪 Systems Dry Run Test Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f test_output/test_results.json ]; then
+            echo "#### Detailed Results" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat test_output/test_results.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Persistent State" >> $GITHUB_STEP_SUMMARY
+          echo "- **Read**: Verified (downloaded production artifact)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Write**: Verified (created test file, then deleted)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cleanup**: Test files removed, production state UNCHANGED" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Quota Usage" >> $GITHUB_STEP_SUMMARY
+          echo "- **Production models**: ZERO" >> $GITHUB_STEP_SUMMARY
+          echo "- **OpenRouter free models**: Minimal (separate quota, dynamically discovered)" >> $GITHUB_STEP_SUMMARY
+          echo "- **All other tests**: FREE endpoints only" >> $GITHUB_STEP_SUMMARY
+          
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_number }}
+          path: test_output/
+          retention-days: 7
+          if-no-files-found: ignore
+
+

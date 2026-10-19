@@ -1,0 +1,1348 @@
+name: AGGRESSIVE MODE - Deep Learning & Virality Boost
+
+# ============================================================================
+# AGGRESSIVE MODE: Use surplus quota for REAL VALUE!
+# ============================================================================
+# 
+# This workflow uses leftover API quota (that would otherwise expire unused)
+# to provide ACTUAL VALUE through:
+#
+# 1. DEEP ANALYTICS: Multiple AI analysis cycles on our performance data
+# 2. VIRALITY RESEARCH: Analyze top creators for patterns we can use
+# 3. SELF-LEARNING: Update viral_patterns.json, variety_state.json, etc.
+# 4. RESEARCH CONCEPTS: Generate and pre-evaluate video concepts
+#
+# ALL learnings are saved to persistent state and USED by video generation!
+#
+# QUOTA PROTECTION:
+# - Production quota (550 calls) is ALWAYS reserved
+# - YouTube quota: Uses only READ operations (no uploads)
+# - Surplus: ~17,000 calls/day available for aggressive features
+# ============================================================================
+
+on:
+  schedule:
+    # v17.9.42: Using 8b-instant (500K tokens/day instead of 100K!)
+    # 200 calls/day for aggressive = 33 calls × 6 runs
+    # Run every 4 hours for stable learning
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  AGGRESSIVE_MODE: "1"
+
+jobs:
+  aggressive-learning:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # v17.9.41: Reduced - 6 calls max per run
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests google-api-python-client
+
+      - name: Create Directories
+        run: |
+          mkdir -p data/persistent
+          mkdir -p data/research
+
+      - name: Restore Persistent State
+        run: |
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=persistent-state&per_page=1" \
+            | jq -r '.artifacts[0].id')
+          
+          if [ "$ARTIFACT_ID" != "null" ] && [ -n "$ARTIFACT_ID" ]; then
+            curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+              -o /tmp/state.zip
+            unzip -o /tmp/state.zip -d data/persistent/ 2>/dev/null || true
+            echo "[OK] Restored persistent state with $(ls -1 data/persistent/ | wc -l) files"
+          else
+            echo "[INFO] No previous state - starting fresh"
+          fi
+        continue-on-error: true
+
+      # ========================================================================
+      # PHASE 1: DEEP ANALYTICS - Multiple AI analysis cycles
+      # ========================================================================
+      - name: Phase 1 - Deep Analytics Cycles
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python << 'DEEP_ANALYTICS'
+          import os
+          import json
+          import time
+          import requests
+          from datetime import datetime
+          from pathlib import Path
+
+          def safe_print(msg):
+              try: print(msg)
+              except: print(msg.encode('ascii', 'replace').decode())
+
+          safe_print("=" * 70)
+          safe_print("  AGGRESSIVE MODE: PHASE 1 - DEEP ANALYTICS")
+          safe_print("=" * 70)
+
+          GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+          GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+          ANALYTICS_FILE = Path("data/persistent/analytics_state.json")
+          VARIETY_FILE = Path("data/persistent/variety_state.json")
+          VIRAL_PATTERNS_FILE = Path("data/persistent/viral_patterns.json")
+          SELF_LEARNING_FILE = Path("data/persistent/self_learning.json")
+          HOOK_WORDS_FILE = Path("data/persistent/hook_word_performance.json")
+          AGGRESSIVE_FILE = Path("data/persistent/aggressive_mode.json")
+
+          def get_best_groq_model():
+              """DYNAMIC: Select model with HIGHEST QUOTA for aggressive learning."""
+              # v17.9.42: QUOTA-AWARE MODEL SELECTION
+              # - llama-3.3-70b-versatile: 100K tokens/day (quality but limited)
+              # - llama-3.1-8b-instant: 500K tokens/day (5x more quota!)
+              # For aggressive mode, prefer MORE QUOTA over quality
+              if not GROQ_API_KEY:
+                  return "llama-3.1-8b-instant"  # Higher quota fallback
+              try:
+                  response = requests.get(
+                      "https://api.groq.com/openai/v1/models",
+                      headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                      timeout=10
+                  )
+                  if response.status_code == 200:
+                      models = response.json().get("data", [])
+                      # PREFER 8b-instant for 5x more quota
+                      for model in models:
+                          model_id = model.get("id", "")
+                          if "8b-instant" in model_id:
+                              return model_id
+                      # Fall back to smaller/faster models
+                      for model in models:
+                          model_id = model.get("id", "")
+                          if "instant" in model_id or "small" in model_id:
+                              return model_id
+                      # Last resort: any active model
+                      for model in models:
+                          if model.get("active", True):
+                              return model.get("id")
+              except Exception as e:
+                  safe_print(f"  [!] Model discovery error: {e}")
+              return "llama-3.1-8b-instant"  # Higher quota fallback
+
+          def call_groq(prompt, max_tokens=1500):
+              """Call Groq API for analysis with DYNAMIC model selection."""
+              if not GROQ_API_KEY:
+                  return None
+              try:
+                  model = get_best_groq_model()
+                  safe_print(f"  [GROQ] Using model: {model}")
+                  response = requests.post(
+                      "https://api.groq.com/openai/v1/chat/completions",
+                      headers={
+                          "Authorization": f"Bearer {GROQ_API_KEY}",
+                          "Content-Type": "application/json"
+                      },
+                      json={
+                          "model": model,
+                          "messages": [{"role": "user", "content": prompt}],
+                          "temperature": 0.7,
+                          "max_tokens": max_tokens
+                      },
+                      timeout=60
+                  )
+                  if response.status_code == 200:
+                      return response.json()["choices"][0]["message"]["content"]
+                  else:
+                      safe_print(f"  [!] Groq error: {response.status_code}")
+              except Exception as e:
+                  safe_print(f"  [!] Groq exception: {e}")
+              return None
+
+          def get_best_gemini_model():
+              """DYNAMIC: Discover and select best available Gemini model."""
+              if not GEMINI_API_KEY:
+                  return "gemini-2.5-flash"
+              try:
+                  response = requests.get(
+                      f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}",
+                      timeout=10
+                  )
+                  if response.status_code == 200:
+                      models = response.json().get("models", [])
+                      # Prefer flash for speed, then pro
+                      for model in models:
+                          name = model.get("name", "").replace("models/", "")
+                          if "flash" in name and "gemini" in name:
+                              return name
+                      for model in models:
+                          name = model.get("name", "").replace("models/", "")
+                          if "gemini" in name:
+                              return name
+              except:
+                  pass
+              return "gemini-2.5-flash"
+
+          def call_gemini(prompt, max_tokens=1500):
+              """Call Gemini API with DYNAMIC model selection."""
+              if not GEMINI_API_KEY:
+                  return None
+              try:
+                  model = get_best_gemini_model()
+                  safe_print(f"  [GEMINI] Using model: {model}")
+                  response = requests.post(
+                      f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
+                      headers={"Content-Type": "application/json"},
+                      json={
+                          "contents": [{"parts": [{"text": prompt}]}],
+                          "generationConfig": {"maxOutputTokens": max_tokens}
+                      },
+                      timeout=60
+                  )
+                  if response.status_code == 200:
+                      return response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                  elif response.status_code == 429:
+                      safe_print("  [!] Gemini rate limited, switching to Groq")
+                      return call_groq(prompt, max_tokens)
+              except Exception as e:
+                  safe_print(f"  [!] Gemini exception: {e}")
+              return None
+
+          # Load existing data
+          analytics_data = {}
+          variety_data = {}
+          viral_patterns = {}
+          self_learning = {}
+          hook_words = {}
+
+          if ANALYTICS_FILE.exists():
+              with open(ANALYTICS_FILE) as f:
+                  analytics_data = json.load(f)
+          if VARIETY_FILE.exists():
+              with open(VARIETY_FILE) as f:
+                  variety_data = json.load(f)
+          if VIRAL_PATTERNS_FILE.exists():
+              with open(VIRAL_PATTERNS_FILE) as f:
+                  viral_patterns = json.load(f)
+          if SELF_LEARNING_FILE.exists():
+              with open(SELF_LEARNING_FILE) as f:
+                  self_learning = json.load(f)
+          if HOOK_WORDS_FILE.exists():
+              with open(HOOK_WORDS_FILE) as f:
+                  hook_words = json.load(f)
+
+          # =====================================================================
+          # DEEP ANALYSIS CYCLE 1: Title Pattern Optimization
+          # =====================================================================
+          safe_print("\n[CYCLE 1] Deep Title Pattern Analysis...")
+          
+          videos = analytics_data.get("videos", [])
+          if videos:
+              top_videos = sorted(videos, key=lambda x: x.get("views", 0), reverse=True)[:10]
+              
+              prompt = f"""You are a viral video title expert. Analyze these TOP PERFORMING video titles:
+
+          {json.dumps([{"title": v["title"], "views": v.get("views", 0)} for v in top_videos], indent=2)}
+
+          Perform DEEP analysis and extract:
+          1. EXACT title structures that work (with placeholders like {{topic}}, {{number}})
+          2. Power words that appear in high performers
+          3. Psychological triggers used (curiosity, fear, greed, etc.)
+          4. Optimal word count and structure
+          5. What makes these titles scroll-stopping
+
+          Return JSON:
+          {{
+              "winning_title_templates": ["Template 1 with {{placeholder}}", "Template 2", ...],
+              "power_words": ["word1", "word2", ...],
+              "psychological_triggers": ["curiosity", "fomo", ...],
+              "optimal_word_count": number,
+              "key_patterns": ["pattern description 1", ...],
+              "avoid_in_titles": ["thing to avoid", ...],
+              "title_score_formula": "description of what makes a 10/10 title"
+          }}
+
+          JSON ONLY:"""
+
+              time.sleep(2.2)  # Rate limit
+              result = call_groq(prompt)
+              
+              if result:
+                  try:
+                      import re
+                      match = re.search(r'\{[\s\S]*\}', result)
+                      if match:
+                          analysis = json.loads(match.group())
+                          
+                          # Update viral patterns with new learnings
+                          if analysis.get("winning_title_templates"):
+                              existing = viral_patterns.get("title_templates", [])
+                              for t in analysis["winning_title_templates"]:
+                                  if t not in existing:
+                                      existing.append(t)
+                              viral_patterns["title_templates"] = existing[-20:]  # Keep 20
+                          
+                          if analysis.get("power_words"):
+                              viral_patterns["power_words"] = analysis["power_words"]
+                          
+                          if analysis.get("psychological_triggers"):
+                              variety_data["psych_triggers"] = analysis["psychological_triggers"]
+                          
+                          if analysis.get("optimal_word_count"):
+                              viral_patterns["optimal_title_word_count"] = analysis["optimal_word_count"]
+                          
+                          safe_print(f"  [OK] Extracted {len(analysis.get('winning_title_templates', []))} title templates")
+                          safe_print(f"  [OK] Found {len(analysis.get('power_words', []))} power words")
+                  except Exception as e:
+                      safe_print(f"  [!] Parse error: {e}")
+
+          # =====================================================================
+          # DEEP ANALYSIS CYCLE 2: Hook Optimization
+          # =====================================================================
+          safe_print("\n[CYCLE 2] Deep Hook Analysis...")
+          
+          if videos:
+              prompt = f"""You are a YouTube Shorts hook expert. Analyze the HOOKS in these viral titles:
+
+          {json.dumps([v["title"] for v in top_videos], indent=2)}
+
+          Extract the EXACT hook formulas that stop the scroll:
+          1. Opening patterns (e.g., "What if...", "Did you know...", "Stop doing this...")
+          2. Curiosity gaps (incomplete info that demands attention)
+          3. Number hooks (specific numbers that intrigue)
+          4. Fear/FOMO triggers
+          5. Challenge hooks ("Only 1% know this...")
+
+          Return JSON:
+          {{
+              "hook_templates": ["Hook template 1...", "Hook template 2...", ...],
+              "curiosity_gaps": ["curiosity pattern 1", ...],
+              "number_hooks": ["X things that...", ...],
+              "fear_hooks": ["Stop doing X before...", ...],
+              "challenge_hooks": ["Only X% of people...", ...],
+              "best_hook_type_by_category": {{"psychology": "curiosity", "finance": "fear", ...}}
+          }}
+
+          JSON ONLY:"""
+
+              time.sleep(2.2)
+              # v17.9.41: Use Groq ONLY in aggressive mode - preserve Gemini for production
+              result = call_groq(prompt)
+              
+              if result:
+                  try:
+                      import re
+                      match = re.search(r'\{[\s\S]*\}', result)
+                      if match:
+                          analysis = json.loads(match.group())
+                          
+                          if analysis.get("hook_templates"):
+                              variety_data["hook_templates"] = analysis["hook_templates"]
+                          
+                          if analysis.get("curiosity_gaps"):
+                              variety_data["curiosity_gaps"] = analysis["curiosity_gaps"]
+                          
+                          if analysis.get("best_hook_type_by_category"):
+                              viral_patterns["hook_type_by_category"] = analysis["best_hook_type_by_category"]
+                          
+                          safe_print(f"  [OK] Extracted {len(analysis.get('hook_templates', []))} hook templates")
+                  except Exception as e:
+                      safe_print(f"  [!] Parse error: {e}")
+
+          # =====================================================================
+          # INTENSIVE ITERATION: Multiple AI perspectives (v17.9.39)
+          # =====================================================================
+          ITERATION_COUNT = 5  # Run 5 iterations per cycle = 5x more learning
+          
+          for iteration in range(ITERATION_COUNT):
+              safe_print(f"\n[ITERATION {iteration+1}/{ITERATION_COUNT}] Multi-perspective analysis...")
+              
+              perspectives = [
+                  "viral video psychologist", "YouTube algorithm expert", 
+                  "attention economy researcher", "scroll-stopping specialist",
+                  "Gen-Z content analyst"
+              ]
+              perspective = perspectives[iteration % len(perspectives)]
+              
+              if videos:
+                  prompt = f"""You are a {perspective}. 
+                  
+          Analyze these videos from YOUR unique perspective:
+          {json.dumps([{"title": v["title"], "views": v.get("views", 0)} for v in videos[:15]], indent=2)}
+
+          What UNIQUE insights do you see that others miss?
+          What would you do MORE of? What would you AVOID?
+          What's the ONE thing that could 10x our views?
+
+          Return JSON:
+          {{
+              "unique_insight": "Your key observation",
+              "do_more": ["action 1", "action 2", "action 3"],
+              "avoid": ["thing to stop", "thing to stop"],
+              "10x_opportunity": "The biggest lever"
+          }}
+
+          JSON ONLY:"""
+
+                  time.sleep(2.2)
+                  result = call_groq(prompt)
+                  
+                  if result:
+                      try:
+                          match = re.search(r'\{[\s\S]*\}', result)
+                          if match:
+                              analysis = json.loads(match.group())
+                              
+                              # Aggregate do_more and avoid lists
+                              if analysis.get("do_more"):
+                                  existing = variety_data.get("do_more", [])
+                                  variety_data["do_more"] = list(set(existing + analysis["do_more"]))[:20]
+                              
+                              if analysis.get("avoid"):
+                                  existing = variety_data.get("avoid", [])
+                                  variety_data["avoid"] = list(set(existing + analysis["avoid"]))[:20]
+                              
+                              if analysis.get("10x_opportunity"):
+                                  opportunities = viral_patterns.get("10x_opportunities", [])
+                                  opportunities.append(analysis["10x_opportunity"])
+                                  viral_patterns["10x_opportunities"] = opportunities[-10:]  # Keep last 10
+                              
+                              safe_print(f"    [{perspective}] Added insights")
+                      except:
+                          pass
+
+          # =====================================================================
+          # DEEP ANALYSIS CYCLE 3: Category Performance Deep Dive
+          # =====================================================================
+          safe_print("\n[CYCLE 3] Category Performance Deep Dive...")
+          
+          if videos:
+              prompt = f"""Analyze these videos for CATEGORY INSIGHTS:
+
+          {json.dumps([{"title": v["title"], "views": v.get("views", 0), "likes": v.get("likes", 0)} for v in videos[:20]], indent=2)}
+
+          Determine:
+          1. Which categories/topics perform best (based on views)
+          2. Category weights for prioritization (should sum to 1.0)
+          3. Subcategories or niches within each category
+          4. Cross-category patterns that work
+
+          Return JSON:
+          {{
+              "category_performance": {{"psychology": 0.25, "finance": 0.2, "health": 0.15, ...}},
+              "top_subcategories": ["money psychology", "brain hacks", ...],
+              "winning_category_combos": ["psychology + finance", ...],
+              "declining_categories": ["category that's saturated", ...],
+              "emerging_opportunities": ["new category to try", ...]
+          }}
+
+          JSON ONLY:"""
+
+              time.sleep(2.2)
+              result = call_groq(prompt)
+              
+              if result:
+                  try:
+                      import re
+                      match = re.search(r'\{[\s\S]*\}', result)
+                      if match:
+                          analysis = json.loads(match.group())
+                          
+                          if analysis.get("category_performance"):
+                              variety_data["learned_weights"] = analysis["category_performance"]
+                          
+                          if analysis.get("top_subcategories"):
+                              variety_data["preferred_subcategories"] = analysis["top_subcategories"]
+                          
+                          if analysis.get("emerging_opportunities"):
+                              viral_patterns["emerging_topics"] = analysis["emerging_opportunities"]
+                          
+                          safe_print(f"  [OK] Updated category weights with {len(analysis.get('category_performance', {}))} categories")
+                  except Exception as e:
+                      safe_print(f"  [!] Parse error: {e}")
+
+          # =====================================================================
+          # DEEP ANALYSIS CYCLE 4: Self-Learning Enhancement
+          # =====================================================================
+          safe_print("\n[CYCLE 4] Self-Learning Enhancement...")
+          
+          all_insights = {
+              "variety_updates": variety_data,
+              "pattern_updates": viral_patterns,
+              "videos_analyzed": len(videos)
+          }
+          
+          prompt = f"""Based on ALL the analysis so far, create a SELF-LEARNING summary:
+
+          Current insights: {json.dumps(all_insights, indent=2)[:2000]}
+
+          Synthesize into actionable recommendations:
+          1. Top 5 things to DO MORE of (specific, actionable)
+          2. Top 5 things to AVOID
+          3. Priority focus areas for next 10 videos
+          4. Content strategy adjustments
+          5. Audience targeting insights
+
+          Return JSON:
+          {{
+              "do_more": ["specific action 1", "action 2", ...],
+              "avoid": ["thing to avoid 1", ...],
+              "priority_focus": ["focus area 1", ...],
+              "strategy_adjustments": ["adjustment 1", ...],
+              "audience_insights": ["insight 1", ...],
+              "confidence_score": 0.0-1.0,
+              "learning_summary": "one paragraph summary of all learnings"
+          }}
+
+          JSON ONLY:"""
+
+          time.sleep(2.2)
+          # v17.9.41: Use Groq ONLY - Gemini reserved for production
+          result = call_groq(prompt)
+          
+          if result:
+              try:
+                  import re
+                  match = re.search(r'\{[\s\S]*\}', result)
+                  if match:
+                      analysis = json.loads(match.group())
+                      
+                      # Update self-learning file
+                      self_learning["last_deep_analysis"] = datetime.now().isoformat()
+                      self_learning["do_more"] = analysis.get("do_more", [])
+                      self_learning["avoid"] = analysis.get("avoid", [])
+                      self_learning["priority_focus"] = analysis.get("priority_focus", [])
+                      self_learning["learning_summary"] = analysis.get("learning_summary", "")
+                      self_learning["confidence_score"] = analysis.get("confidence_score", 0.5)
+                      
+                      # Also update variety state with do_more/avoid
+                      variety_data["do_more"] = analysis.get("do_more", [])
+                      variety_data["avoid_categories"] = analysis.get("avoid", [])
+                      
+                      safe_print(f"  [OK] Self-learning updated with {len(analysis.get('do_more', []))} action items")
+              except Exception as e:
+                  safe_print(f"  [!] Parse error: {e}")
+
+          # =====================================================================
+          # INTENSIVE CONTINUOUS LEARNING (v17.9.40)
+          # =====================================================================
+          # Use remaining time to learn as much as possible!
+          # Target: 300 calls/run = 10% of Groq daily quota per run
+          # 48 runs/day × 300 calls = 14,400 calls/day = 100% Groq quota
+          
+          import time as time_module
+          start_time = time_module.time()
+          MAX_RUNTIME_SECONDS = 10 * 60  # 10 mins per run
+          call_count = 0
+          # v17.9.42: QUOTA MATH (using llama-3.1-8b-instant):
+          # - Groq 8b-instant: 500,000 tokens/day, ~2000 tokens/call = 250 calls/day
+          # - Gemini Flash: 250 RPD - reserved for production
+          # - Reserve 50 Groq calls for production fallback
+          # - Aggressive gets: 200 calls/day = 33 calls per run (6 runs/day)
+          MAX_CALLS = 33
+          
+          learning_topics = [
+              "viewer psychology and attention patterns",
+              "thumbnail design principles that increase CTR",
+              "optimal video pacing and retention curves",
+              "title formulas that create curiosity gaps",
+              "hook structures that stop scrolling",
+              "category trends and saturation analysis",
+              "competitor content gap analysis",
+              "audience demographic targeting",
+              "posting time optimization by timezone",
+              "hashtag and tag effectiveness",
+              "comment engagement strategies",
+              "series and sequel planning",
+              "seasonal content opportunities",
+              "algorithm signals and ranking factors",
+              "virality prediction indicators"
+          ]
+          
+          safe_print(f"\n[INTENSIVE] Starting continuous learning loop (max {MAX_CALLS} calls, {MAX_RUNTIME_SECONDS//60} mins)")
+          
+          iteration = 0
+          while call_count < MAX_CALLS and (time_module.time() - start_time) < MAX_RUNTIME_SECONDS:
+              iteration += 1
+              topic = learning_topics[iteration % len(learning_topics)]
+              
+              safe_print(f"\n  [LEARN {iteration}] Topic: {topic}")
+              
+              # Generate insights for this topic
+              prompt = f"""You are a YouTube Shorts viral content strategist.
+              
+          Topic for deep analysis: {topic}
+
+          Our current data:
+          - Top performing categories: {list(variety_data.get('learned_weights', {}).keys())[:5]}
+          - Best hooks we've found: {variety_data.get('best_hooks', [])[:3]}
+          - Videos analyzed: {len(videos)}
+
+          Provide SPECIFIC, ACTIONABLE insights for "{topic}":
+          1. What patterns should we use?
+          2. What mistakes should we avoid?
+          3. What specific tactics will increase views?
+          4. Any contrarian insights others miss?
+
+          Return JSON:
+          {{
+              "topic": "{topic}",
+              "patterns_to_use": ["specific pattern 1", "pattern 2", "pattern 3"],
+              "mistakes_to_avoid": ["mistake 1", "mistake 2"],
+              "tactics_for_views": ["tactic 1", "tactic 2", "tactic 3"],
+              "contrarian_insight": "one unique insight",
+              "confidence": 0.0-1.0
+          }}
+
+          JSON ONLY:"""
+
+              time.sleep(2.2)  # Groq rate limit
+              result = call_groq(prompt, max_tokens=800)
+              call_count += 1
+              
+              if result:
+                  try:
+                      match = re.search(r'\{[\s\S]*\}', result)
+                      if match:
+                          insights = json.loads(match.group())
+                          
+                          # Aggregate insights
+                          key = f"insights_{topic.replace(' ', '_')[:30]}"
+                          variety_data[key] = insights
+                          
+                          # Add to master lists
+                          if insights.get("patterns_to_use"):
+                              existing = variety_data.get("all_patterns", [])
+                              variety_data["all_patterns"] = list(set(existing + insights["patterns_to_use"]))[-100:]
+                          
+                          if insights.get("mistakes_to_avoid"):
+                              existing = variety_data.get("all_mistakes", [])
+                              variety_data["all_mistakes"] = list(set(existing + insights["mistakes_to_avoid"]))[-50:]
+                          
+                          if insights.get("contrarian_insight"):
+                              contrarian = variety_data.get("contrarian_insights", [])
+                              contrarian.append(insights["contrarian_insight"])
+                              variety_data["contrarian_insights"] = contrarian[-30:]
+                          
+                          safe_print(f"    ✓ Learned: {insights.get('contrarian_insight', 'N/A')[:60]}")
+                  except:
+                      pass
+              
+              # Every 10 iterations, do a meta-analysis
+              if iteration % 10 == 0:
+                  safe_print(f"\n  [META] Synthesizing last 10 learnings...")
+                  
+                  recent_patterns = variety_data.get("all_patterns", [])[-30:]
+                  
+                  meta_prompt = f"""Synthesize these viral content patterns into TOP 5 actionable rules:
+
+          Patterns discovered: {recent_patterns}
+
+          Create a priority-ranked summary. Return JSON:
+          {{
+              "top_5_rules": ["Rule 1 - most important", "Rule 2", "Rule 3", "Rule 4", "Rule 5"],
+              "single_biggest_opportunity": "The one thing that will 10x our views",
+              "immediate_action": "What to do in the next video"
+          }}
+
+          JSON ONLY:"""
+
+                  time.sleep(2.2)
+                  meta_result = call_groq(meta_prompt, max_tokens=600)
+                  call_count += 1
+                  
+                  if meta_result:
+                      try:
+                          match = re.search(r'\{[\s\S]*\}', meta_result)
+                          if match:
+                              meta = json.loads(match.group())
+                              variety_data["top_5_rules"] = meta.get("top_5_rules", [])
+                              variety_data["biggest_opportunity"] = meta.get("single_biggest_opportunity", "")
+                              variety_data["next_video_action"] = meta.get("immediate_action", "")
+                              safe_print(f"    ✓ Top rule: {meta.get('top_5_rules', ['N/A'])[0][:50]}")
+                      except:
+                          pass
+          
+          elapsed = time_module.time() - start_time
+          safe_print(f"\n[INTENSIVE] Complete: {call_count} calls, {elapsed/60:.1f} mins")
+          variety_data["intensive_learning_calls"] = call_count
+          variety_data["intensive_learning_time"] = f"{elapsed/60:.1f} mins"
+
+          # =====================================================================
+          # SAVE ALL LEARNINGS
+          # =====================================================================
+          safe_print("\n[SAVE] Writing all learnings to persistent state...")
+
+          # Update timestamps
+          variety_data["last_aggressive_update"] = datetime.now().isoformat()
+          viral_patterns["last_aggressive_update"] = datetime.now().isoformat()
+
+          with open(VARIETY_FILE, 'w') as f:
+              json.dump(variety_data, f, indent=2)
+          safe_print(f"  [OK] variety_state.json - {len(variety_data)} keys")
+
+          with open(VIRAL_PATTERNS_FILE, 'w') as f:
+              json.dump(viral_patterns, f, indent=2)
+          safe_print(f"  [OK] viral_patterns.json - {len(viral_patterns)} keys")
+
+          with open(SELF_LEARNING_FILE, 'w') as f:
+              json.dump(self_learning, f, indent=2)
+          safe_print(f"  [OK] self_learning.json - updated")
+
+          # Update aggressive mode stats
+          aggressive_state = {}
+          if AGGRESSIVE_FILE.exists():
+              with open(AGGRESSIVE_FILE) as f:
+                  aggressive_state = json.load(f)
+          
+          stats = aggressive_state.get("stats", {})
+          stats["extra_analytics_runs"] = stats.get("extra_analytics_runs", 0) + 1
+          stats["quota_used"] = stats.get("quota_used", 0) + 20  # Estimated 5 calls x 4 tokens
+          aggressive_state["stats"] = stats
+          aggressive_state["last_run"] = datetime.now().isoformat()
+          aggressive_state["enabled"] = True
+
+          with open(AGGRESSIVE_FILE, 'w') as f:
+              json.dump(aggressive_state, f, indent=2)
+          safe_print(f"  [OK] aggressive_mode.json - stats updated")
+
+          safe_print("\n" + "=" * 70)
+          safe_print("  PHASE 1 COMPLETE - Deep analytics saved to persistent state")
+          safe_print("=" * 70)
+          DEEP_ANALYTICS
+
+      # ========================================================================
+      # PHASE 2: VIRALITY RESEARCH - Learn from successful creators
+      # ========================================================================
+      - name: Phase 2 - Virality Research
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python << 'VIRALITY_RESEARCH'
+          import os
+          import json
+          import time
+          import requests
+          from datetime import datetime
+          from pathlib import Path
+
+          def safe_print(msg):
+              try: print(msg)
+              except: print(msg.encode('ascii', 'replace').decode())
+
+          safe_print("=" * 70)
+          safe_print("  AGGRESSIVE MODE: PHASE 2 - VIRALITY RESEARCH")
+          safe_print("=" * 70)
+
+          YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID")
+          YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET")
+          YOUTUBE_REFRESH_TOKEN = os.environ.get("YOUTUBE_REFRESH_TOKEN")
+          GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+          VIRAL_PATTERNS_FILE = Path("data/persistent/viral_patterns.json")
+          VARIETY_FILE = Path("data/persistent/variety_state.json")
+          COMPETITOR_FILE = Path("data/persistent/competitor_insights.json")
+
+          def get_access_token():
+              """Get YouTube access token."""
+              if not all([YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN]):
+                  return None
+              try:
+                  response = requests.post(
+                      "https://oauth2.googleapis.com/token",
+                      data={
+                          "client_id": YOUTUBE_CLIENT_ID,
+                          "client_secret": YOUTUBE_CLIENT_SECRET,
+                          "refresh_token": YOUTUBE_REFRESH_TOKEN,
+                          "grant_type": "refresh_token",
+                      },
+                      timeout=15
+                  )
+                  if response.status_code == 200:
+                      return response.json().get("access_token")
+              except Exception as e:
+                  safe_print(f"[!] Token error: {e}")
+              return None
+
+          def search_viral_shorts(access_token, query, max_results=10):
+              """Search for viral Shorts on YouTube."""
+              if not access_token:
+                  return []
+              
+              headers = {"Authorization": f"Bearer {access_token}"}
+              try:
+                  response = requests.get(
+                      "https://www.googleapis.com/youtube/v3/search",
+                      params={
+                          "part": "snippet",
+                          "q": query,
+                          "type": "video",
+                          "videoDuration": "short",  # Shorts
+                          "order": "viewCount",  # Most views
+                          "maxResults": max_results,
+                          "publishedAfter": "2024-01-01T00:00:00Z"  # Recent
+                      },
+                      headers=headers,
+                      timeout=15
+                  )
+                  if response.status_code == 200:
+                      return [
+                          {
+                              "title": item["snippet"]["title"],
+                              "channel": item["snippet"]["channelTitle"],
+                              "video_id": item["id"]["videoId"]
+                          }
+                          for item in response.json().get("items", [])
+                      ]
+              except Exception as e:
+                  safe_print(f"[!] Search error: {e}")
+              return []
+
+          def get_best_groq_model():
+              """DYNAMIC: Discover and select best available Groq model."""
+              if not GROQ_API_KEY:
+                  return "llama-3.3-70b-versatile"
+              try:
+                  response = requests.get(
+                      "https://api.groq.com/openai/v1/models",
+                      headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                      timeout=10
+                  )
+                  if response.status_code == 200:
+                      models = response.json().get("data", [])
+                      for model in models:
+                          model_id = model.get("id", "")
+                          if "llama" in model_id and "70b" in model_id:
+                              return model_id
+                      for model in models:
+                          model_id = model.get("id", "")
+                          if "mixtral" in model_id:
+                              return model_id
+                      for model in models:
+                          if model.get("active", True):
+                              return model.get("id")
+              except:
+                  pass
+              return "llama-3.3-70b-versatile"
+
+          def call_groq(prompt, max_tokens=1500):
+              """Call Groq for analysis with DYNAMIC model."""
+              if not GROQ_API_KEY:
+                  return None
+              try:
+                  model = get_best_groq_model()
+                  response = requests.post(
+                      "https://api.groq.com/openai/v1/chat/completions",
+                      headers={
+                          "Authorization": f"Bearer {GROQ_API_KEY}",
+                          "Content-Type": "application/json"
+                      },
+                      json={
+                          "model": model,
+                          "messages": [{"role": "user", "content": prompt}],
+                          "temperature": 0.7,
+                          "max_tokens": max_tokens
+                      },
+                      timeout=60
+                  )
+                  if response.status_code == 200:
+                      return response.json()["choices"][0]["message"]["content"]
+              except Exception as e:
+                  safe_print(f"[!] Groq error: {e}")
+              return None
+
+          # Load existing data
+          viral_patterns = {}
+          variety_data = {}
+          competitor_data = {"searches": [], "patterns": [], "last_updated": None}
+
+          if VIRAL_PATTERNS_FILE.exists():
+              with open(VIRAL_PATTERNS_FILE) as f:
+                  viral_patterns = json.load(f)
+          if VARIETY_FILE.exists():
+              with open(VARIETY_FILE) as f:
+                  variety_data = json.load(f)
+          if COMPETITOR_FILE.exists():
+              with open(COMPETITOR_FILE) as f:
+                  competitor_data = json.load(f)
+
+          # Get access token
+          access_token = get_access_token()
+          if not access_token:
+              safe_print("[!] No YouTube access - skipping virality research")
+              exit(0)
+
+          safe_print("[OK] YouTube authenticated")
+
+          # =====================================================================
+          # RESEARCH: Search for viral Shorts in our niches
+          # =====================================================================
+          # v17.9.39: INTENSIVE SEARCH - Use more quota for deeper learning
+          search_queries = [
+              "psychology facts shorts viral",
+              "money saving tips shorts",
+              "life hacks shorts 2024",
+              "brain tricks facts shorts",
+              "viral facts shorts AI",
+              "motivational shorts viral",
+              "scary facts shorts",
+              "rich people secrets shorts",
+              "dark psychology tricks shorts",
+              "future predictions shorts"
+          ]
+
+          all_viral_videos = []
+          
+          for query in search_queries:  # v17.9.39: ALL searches for maximum learning
+              safe_print(f"\n[SEARCH] '{query}'...")
+              results = search_viral_shorts(access_token, query, max_results=5)
+              all_viral_videos.extend(results)
+              safe_print(f"  Found {len(results)} videos")
+              time.sleep(0.5)  # Respect rate limits
+
+          safe_print(f"\n[OK] Collected {len(all_viral_videos)} viral videos to analyze")
+
+          if all_viral_videos:
+              # Analyze patterns
+              prompt = f"""Analyze these VIRAL YouTube Shorts titles from successful creators:
+
+          {json.dumps(all_viral_videos, indent=2)}
+
+          Extract REUSABLE patterns:
+          1. Common title structures
+          2. Hooks that work
+          3. Topics that are trending
+          4. Emotional triggers used
+          5. Formatting tricks (caps, emojis, numbers)
+
+          Return JSON:
+          {{
+              "viral_title_patterns": ["pattern 1 with {{placeholder}}", ...],
+              "trending_topics": ["topic 1", "topic 2", ...],
+              "hook_formulas": ["hook formula 1", ...],
+              "emotional_triggers": ["curiosity", "shock", ...],
+              "formatting_tricks": ["use of caps", ...],
+              "channels_to_study": ["channel name", ...],
+              "content_gaps": ["opportunity we should target", ...]
+          }}
+
+          JSON ONLY:"""
+
+              time.sleep(2.2)
+              result = call_groq(prompt)
+              
+              if result:
+                  try:
+                      import re
+                      match = re.search(r'\{[\s\S]*\}', result)
+                      if match:
+                          analysis = json.loads(match.group())
+                          
+                          # Update viral patterns
+                          if analysis.get("viral_title_patterns"):
+                              existing = viral_patterns.get("external_patterns", [])
+                              for p in analysis["viral_title_patterns"]:
+                                  if p not in existing:
+                                      existing.append(p)
+                              viral_patterns["external_patterns"] = existing[-15:]
+                          
+                          if analysis.get("trending_topics"):
+                              viral_patterns["trending_topics"] = analysis["trending_topics"]
+                          
+                          if analysis.get("hook_formulas"):
+                              variety_data["external_hooks"] = analysis["hook_formulas"]
+                          
+                          if analysis.get("content_gaps"):
+                              viral_patterns["content_opportunities"] = analysis["content_gaps"]
+                          
+                          # Save competitor data
+                          competitor_data["searches"].append({
+                              "date": datetime.now().isoformat(),
+                              "videos_analyzed": len(all_viral_videos),
+                              "patterns_found": len(analysis.get("viral_title_patterns", []))
+                          })
+                          competitor_data["patterns"] = analysis.get("viral_title_patterns", [])[-20:]
+                          competitor_data["trending_topics"] = analysis.get("trending_topics", [])
+                          competitor_data["last_updated"] = datetime.now().isoformat()
+                          
+                          safe_print(f"\n[OK] Extracted {len(analysis.get('viral_title_patterns', []))} patterns")
+                          safe_print(f"[OK] Found {len(analysis.get('trending_topics', []))} trending topics")
+                  except Exception as e:
+                      safe_print(f"[!] Parse error: {e}")
+
+          # Save all updates
+          safe_print("\n[SAVE] Writing virality research to persistent state...")
+
+          viral_patterns["last_virality_research"] = datetime.now().isoformat()
+          with open(VIRAL_PATTERNS_FILE, 'w') as f:
+              json.dump(viral_patterns, f, indent=2)
+          safe_print(f"  [OK] viral_patterns.json updated")
+
+          variety_data["last_virality_research"] = datetime.now().isoformat()
+          with open(VARIETY_FILE, 'w') as f:
+              json.dump(variety_data, f, indent=2)
+          safe_print(f"  [OK] variety_state.json updated")
+
+          with open(COMPETITOR_FILE, 'w') as f:
+              json.dump(competitor_data, f, indent=2)
+          safe_print(f"  [OK] competitor_insights.json created")
+
+          safe_print("\n" + "=" * 70)
+          safe_print("  PHASE 2 COMPLETE - Virality research saved")
+          safe_print("=" * 70)
+          VIRALITY_RESEARCH
+
+      # ========================================================================
+      # PHASE 3: RESEARCH CONCEPT GENERATION
+      # ========================================================================
+      - name: Phase 3 - Research Concept Generation
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python << 'RESEARCH_CONCEPTS'
+          import os
+          import json
+          import time
+          import requests
+          from datetime import datetime
+          from pathlib import Path
+
+          def safe_print(msg):
+              try: print(msg)
+              except: print(msg.encode('ascii', 'replace').decode())
+
+          safe_print("=" * 70)
+          safe_print("  AGGRESSIVE MODE: PHASE 3 - RESEARCH CONCEPTS")
+          safe_print("=" * 70)
+
+          GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+          VIRAL_PATTERNS_FILE = Path("data/persistent/viral_patterns.json")
+          VARIETY_FILE = Path("data/persistent/variety_state.json")
+          RESEARCH_CONCEPTS_FILE = Path("data/persistent/research_concepts.json")
+          AGGRESSIVE_FILE = Path("data/persistent/aggressive_mode.json")
+
+          def get_best_groq_model():
+              """DYNAMIC model selection."""
+              if not GROQ_API_KEY:
+                  return "llama-3.3-70b-versatile"
+              try:
+                  response = requests.get(
+                      "https://api.groq.com/openai/v1/models",
+                      headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                      timeout=10
+                  )
+                  if response.status_code == 200:
+                      models = response.json().get("data", [])
+                      for model in models:
+                          if "llama" in model.get("id", "") and "70b" in model.get("id", ""):
+                              return model["id"]
+                      for model in models:
+                          if "mixtral" in model.get("id", ""):
+                              return model["id"]
+                      for model in models:
+                          if model.get("active", True):
+                              return model.get("id")
+              except:
+                  pass
+              return "llama-3.3-70b-versatile"
+
+          def call_groq(prompt, max_tokens=2000):
+              if not GROQ_API_KEY:
+                  return None
+              try:
+                  model = get_best_groq_model()
+                  response = requests.post(
+                      "https://api.groq.com/openai/v1/chat/completions",
+                      headers={
+                          "Authorization": f"Bearer {GROQ_API_KEY}",
+                          "Content-Type": "application/json"
+                      },
+                      json={
+                          "model": model,
+                          "messages": [{"role": "user", "content": prompt}],
+                          "temperature": 0.8,
+                          "max_tokens": max_tokens
+                      },
+                      timeout=60
+                  )
+                  if response.status_code == 200:
+                      return response.json()["choices"][0]["message"]["content"]
+              except Exception as e:
+                  safe_print(f"[!] Groq error: {e}")
+              return None
+
+          # Load learnings
+          viral_patterns = {}
+          variety_data = {}
+          research_concepts = {"concepts": [], "last_generated": None}
+
+          if VIRAL_PATTERNS_FILE.exists():
+              with open(VIRAL_PATTERNS_FILE) as f:
+                  viral_patterns = json.load(f)
+          if VARIETY_FILE.exists():
+              with open(VARIETY_FILE) as f:
+                  variety_data = json.load(f)
+          if RESEARCH_CONCEPTS_FILE.exists():
+              with open(RESEARCH_CONCEPTS_FILE) as f:
+                  research_concepts = json.load(f)
+
+          # Generate research concepts using all learnings
+          safe_print("\n[GENERATE] Creating research video concepts...")
+
+          learnings = {
+              "trending_topics": viral_patterns.get("trending_topics", []),
+              "external_patterns": viral_patterns.get("external_patterns", []),
+              "content_opportunities": viral_patterns.get("content_opportunities", []),
+              "do_more": variety_data.get("do_more", []),
+              "preferred_categories": variety_data.get("preferred_categories", []),
+              "hook_templates": variety_data.get("hook_templates", [])
+          }
+
+          prompt = f"""Based on these learnings from analytics and virality research:
+
+          {json.dumps(learnings, indent=2)}
+
+          Generate 10 INNOVATIVE video concepts that:
+          1. Apply the winning patterns we learned
+          2. Target trending topics and content opportunities
+          3. Use the best hooks and psychological triggers
+          4. Stand out from typical AI Shorts
+
+          For each concept, provide:
+          - Title (using winning patterns)
+          - Hook (first 3 seconds)
+          - Category
+          - Predicted virality score (1-10)
+          - Why it will work (based on learnings)
+
+          Return JSON:
+          {{
+              "concepts": [
+                  {{
+                      "title": "Exact video title",
+                      "hook": "Opening hook text",
+                      "category": "psychology/finance/health/etc",
+                      "predicted_score": 8.5,
+                      "reasoning": "Why this will perform well"
+                  }},
+                  ...
+              ]
+          }}
+
+          Generate DIVERSE, CREATIVE concepts. JSON ONLY:"""
+
+          time.sleep(2.2)
+          result = call_groq(prompt)
+
+          if result:
+              try:
+                  import re
+                  match = re.search(r'\{[\s\S]*\}', result)
+                  if match:
+                      data = json.loads(match.group())
+                      new_concepts = data.get("concepts", [])
+                      
+                      # Add to research concepts (keep best 50)
+                      existing = research_concepts.get("concepts", [])
+                      for c in new_concepts:
+                          c["generated_at"] = datetime.now().isoformat()
+                          c["used"] = False
+                          existing.append(c)
+                      
+                      # Sort by score and keep top 50
+                      existing.sort(key=lambda x: x.get("predicted_score", 0), reverse=True)
+                      research_concepts["concepts"] = existing[:50]
+                      research_concepts["last_generated"] = datetime.now().isoformat()
+                      research_concepts["total_generated"] = research_concepts.get("total_generated", 0) + len(new_concepts)
+                      
+                      safe_print(f"  [OK] Generated {len(new_concepts)} new concepts")
+                      safe_print(f"  [OK] Total research bank: {len(research_concepts['concepts'])} concepts")
+                      
+                      for c in new_concepts[:3]:
+                          safe_print(f"    - {c.get('title', 'N/A')[:50]}... (score: {c.get('predicted_score', 0)})")
+              except Exception as e:
+                  safe_print(f"[!] Parse error: {e}")
+
+          # Save
+          with open(RESEARCH_CONCEPTS_FILE, 'w') as f:
+              json.dump(research_concepts, f, indent=2)
+          safe_print(f"\n[OK] research_concepts.json updated")
+
+          # Update aggressive mode stats
+          aggressive_state = {}
+          if AGGRESSIVE_FILE.exists():
+              with open(AGGRESSIVE_FILE) as f:
+                  aggressive_state = json.load(f)
+          
+          stats = aggressive_state.get("stats", {})
+          stats["research_concepts_generated"] = stats.get("research_concepts_generated", 0) + len(research_concepts.get("concepts", []))
+          stats["quota_used"] = stats.get("quota_used", 0) + 5
+          aggressive_state["stats"] = stats
+          
+          with open(AGGRESSIVE_FILE, 'w') as f:
+              json.dump(aggressive_state, f, indent=2)
+
+          safe_print("\n" + "=" * 70)
+          safe_print("  PHASE 3 COMPLETE - Research concepts saved")
+          safe_print("=" * 70)
+          RESEARCH_CONCEPTS
+
+      # ========================================================================
+      # PHASE 4: PROGRESS MONITORING
+      # ========================================================================
+      - name: Phase 4 - Progress Monitoring
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python << 'PROGRESS_MONITOR'
+          import os
+          import json
+          from datetime import datetime, timedelta
+          from pathlib import Path
+          import requests
+
+          def safe_print(msg):
+              try: print(msg)
+              except: print(msg.encode('ascii', 'replace').decode())
+
+          safe_print("=" * 70)
+          safe_print("  AGGRESSIVE MODE: PHASE 4 - PROGRESS MONITORING")
+          safe_print("=" * 70)
+
+          PROGRESS_FILE = Path("data/persistent/aggressive_progress.json")
+          ANALYTICS_FILE = Path("data/persistent/analytics_state.json")
+
+          # Load existing progress data
+          progress = {
+              "runs": [],
+              "metrics_history": [],
+              "last_updated": None
+          }
+          if PROGRESS_FILE.exists():
+              try:
+                  with open(PROGRESS_FILE) as f:
+                      progress = json.load(f)
+              except:
+                  pass
+
+          # Get current metrics from analytics
+          analytics = {}
+          if ANALYTICS_FILE.exists():
+              try:
+                  with open(ANALYTICS_FILE) as f:
+                      analytics = json.load(f)
+              except:
+                  pass
+
+          # Calculate current metrics
+          videos = analytics.get("videos", [])
+          if videos:
+              total_views = sum(v.get("views", 0) for v in videos)
+              avg_views = total_views / len(videos) if videos else 0
+              recent_5 = sorted(videos, key=lambda x: x.get("published", ""), reverse=True)[:5]
+              recent_avg = sum(v.get("views", 0) for v in recent_5) / len(recent_5) if recent_5 else 0
+              
+              current_metrics = {
+                  "timestamp": datetime.now().isoformat(),
+                  "total_videos": len(videos),
+                  "total_views": total_views,
+                  "avg_views_all": round(avg_views, 2),
+                  "avg_views_recent_5": round(recent_avg, 2)
+              }
+              
+              # Add to history
+              progress["metrics_history"].append(current_metrics)
+              progress["metrics_history"] = progress["metrics_history"][-100:]  # Keep last 100
+              
+              # Check for improvement
+              if len(progress["metrics_history"]) >= 2:
+                  prev = progress["metrics_history"][-2]
+                  view_change = current_metrics["avg_views_recent_5"] - prev.get("avg_views_recent_5", 0)
+                  improvement = "IMPROVED" if view_change > 0 else "DECLINED" if view_change < 0 else "STABLE"
+                  
+                  safe_print(f"\n[PROGRESS] Performance: {improvement}")
+                  safe_print(f"  - Avg views (recent 5): {current_metrics['avg_views_recent_5']}")
+                  safe_print(f"  - Change from last run: {view_change:+.2f}")
+              else:
+                  safe_print("\n[PROGRESS] First run - baseline established")
+                  safe_print(f"  - Avg views (recent 5): {current_metrics['avg_views_recent_5']}")
+              
+              safe_print(f"  - Total videos tracked: {current_metrics['total_videos']}")
+          else:
+              safe_print("\n[PROGRESS] No analytics data available yet")
+
+          # Record this run
+          progress["runs"].append({
+              "timestamp": datetime.now().isoformat(),
+              "phases_completed": 4
+          })
+          progress["runs"] = progress["runs"][-50:]  # Keep last 50 runs
+          progress["last_updated"] = datetime.now().isoformat()
+
+          # Save progress
+          with open(PROGRESS_FILE, 'w') as f:
+              json.dump(progress, f, indent=2)
+          safe_print(f"\n[OK] aggressive_progress.json updated")
+
+          safe_print("\n" + "=" * 70)
+          safe_print("  PHASE 4 COMPLETE - Progress monitoring saved")
+          safe_print("=" * 70)
+          PROGRESS_MONITOR
+
+      # ========================================================================
+      # SUMMARY & SAVE
+      # ========================================================================
+      - name: Generate Summary
+        if: always()
+        run: |
+          echo "## 🚀 AGGRESSIVE MODE - Deep Learning Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Phases Completed:" >> $GITHUB_STEP_SUMMARY
+          echo "1. ✅ **Deep Analytics** - Multiple AI cycles analyzing our performance" >> $GITHUB_STEP_SUMMARY
+          echo "2. ✅ **Virality Research** - Patterns from top viral Shorts creators" >> $GITHUB_STEP_SUMMARY
+          echo "3. ✅ **Research Concepts** - Pre-generated video ideas based on learnings" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Persistent Data Updated:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`variety_state.json\` - Category weights, hooks, psych triggers" >> $GITHUB_STEP_SUMMARY
+          echo "- \`viral_patterns.json\` - Title templates, trending topics" >> $GITHUB_STEP_SUMMARY
+          echo "- \`self_learning.json\` - Do more/avoid lists, priority focus" >> $GITHUB_STEP_SUMMARY
+          echo "- \`competitor_insights.json\` - External viral patterns" >> $GITHUB_STEP_SUMMARY
+          echo "- \`research_concepts.json\` - Pre-evaluated video concepts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### How This Improves Video Generation:" >> $GITHUB_STEP_SUMMARY
+          echo "The next \`generate.yml\` run will automatically use ALL these learnings!" >> $GITHUB_STEP_SUMMARY
+          echo "- Better titles using proven patterns" >> $GITHUB_STEP_SUMMARY
+          echo "- More effective hooks" >> $GITHUB_STEP_SUMMARY
+          echo "- Trending topic focus" >> $GITHUB_STEP_SUMMARY
+          echo "- Optimized category selection" >> $GITHUB_STEP_SUMMARY
+
+      - name: Save Persistent State
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: persistent-state
+          path: data/persistent/
+          retention-days: 90
+          overwrite: true

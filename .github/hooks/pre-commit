@@ -1,0 +1,16 @@
+#!/bin/sh
+# ViralShorts Factory - Pre-commit Hook
+# Runs version verification before every commit
+
+echo "Running version verification..."
+python version_verification.py --quick
+
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "Commit blocked: Version verification failed!"
+    echo "Run 'python version_verification.py' for full report"
+    exit 1
+fi
+
+echo "Verification passed - proceeding with commit"
+

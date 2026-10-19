@@ -1,0 +1,99 @@
+name: Model Discovery & Evaluation
+
+# Run comprehensive model discovery and show:
+# - All available models from all providers
+# - Categorization (PRODUCTION, CRITICAL, BACKUP, TEST, BONUS)
+# - What models will be used for which workflow steps
+# - Rate limits with 10% safety margins
+# - Quota pool analysis for aggressive mode
+
+on:
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: 'Show detailed output'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  discover-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests
+      
+      - name: Run Model Discovery
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python scripts/discover_and_evaluate_models.py
+      
+      - name: Generate Summary
+        if: always()
+        run: |
+          echo "## 🔍 Model Discovery & Evaluation Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f test_output/model_discovery_report.json ]; then
+            echo "### Models Discovered" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Extract counts from JSON
+            TOTAL=$(cat test_output/model_discovery_report.json | jq '.total_models')
+            echo "Total: **$TOTAL** models" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            echo "### Categories" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Category | Count | Top Model |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
+            
+            for cat in PRODUCTION_HIGH_THROUGHPUT PRODUCTION_LOW_THROUGHPUT BACKUP TEST_PROMPTS TEST_SYSTEM BONUS; do
+              COUNT=$(cat test_output/model_discovery_report.json | jq ".categories.${cat} | length")
+              TOP=$(cat test_output/model_discovery_report.json | jq -r ".categories.${cat}[0].model // \"N/A\"")
+              echo "| $cat | $COUNT | $TOP |" >> $GITHUB_STEP_SUMMARY
+            done
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Quota Pools" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat test_output/model_discovery_report.json | jq '.quota_pools' >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 429 Prevention" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **10% safety margin** applied to all rate limit delays" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Expected 429 errors: **ZERO**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Report not generated - check workflow logs" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Upload Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-discovery-report
+          path: test_output/
+          retention-days: 7
+          if-no-files-found: ignore

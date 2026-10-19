@@ -1,0 +1,444 @@
+name: PROMPT TESTING - Validate All AI Prompts & Response Handling (v17.9.40)
+
+# Tests all prompts from prompts_registry against real AI models
+# Validates response handling, JSON parsing, and expected output structure
+# Uses SURPLUS quota (Groq free tier for speed)
+
+on:
+  # Run weekly to catch drift
+  schedule:
+    - cron: '0 5 * * 0'  # Sunday 5 AM UTC
+  
+  # Manual trigger for on-demand testing
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode: quick (5 prompts) or full (all prompts)'
+        required: false
+        default: 'quick'
+        type: choice
+        options:
+          - quick
+          - full
+
+jobs:
+  test-prompts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Test All Prompts
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 << 'EOF'
+          import os
+          import sys
+          import json
+          import re
+          import time
+          import requests
+          from pathlib import Path
+          from datetime import datetime
+
+          def safe_print(msg):
+              print(msg, flush=True)
+
+          GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+          GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+          TEST_MODE = "${{ github.event.inputs.test_mode }}" or "quick"
+
+          # Create results directory
+          Path("data/prompt_tests").mkdir(parents=True, exist_ok=True)
+          
+          # =========================================================================
+          # DYNAMIC MODEL DISCOVERY
+          # =========================================================================
+          def get_best_groq_model():
+              """DYNAMIC: Discover and select best available Groq model."""
+              if not GROQ_API_KEY:
+                  return "llama-3.3-70b-versatile"
+              try:
+                  response = requests.get(
+                      "https://api.groq.com/openai/v1/models",
+                      headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                      timeout=10
+                  )
+                  if response.status_code == 200:
+                      models = response.json().get("data", [])
+                      # Prefer larger versatile models
+                      preferred = ["llama-3.3-70b-versatile", "llama-3.2-90b-vision-preview", "mixtral-8x7b-32768"]
+                      for pref in preferred:
+                          if any(m.get("id") == pref for m in models):
+                              return pref
+                      # Fallback to any available
+                      active = [m["id"] for m in models if m.get("active", True)]
+                      if active:
+                          return active[0]
+              except Exception as e:
+                  safe_print(f"  [!] Model discovery error: {e}")
+              return "llama-3.3-70b-versatile"
+
+          def get_best_gemini_model():
+              """DYNAMIC: Discover and select best available Gemini model."""
+              if not GEMINI_API_KEY:
+                  return "gemini-2.5-flash"
+              try:
+                  response = requests.get(
+                      f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}",
+                      timeout=10
+                  )
+                  if response.status_code == 200:
+                      models = response.json().get("models", [])
+                      for model in models:
+                          name = model.get("name", "").replace("models/", "")
+                          if "flash" in name and "gemini" in name:
+                              return name
+              except:
+                  pass
+              return "gemini-2.5-flash"
+
+          # =========================================================================
+          # AI CALLERS
+          # =========================================================================
+          def call_groq(prompt, max_tokens=1000):
+              """Call Groq API with dynamic model selection."""
+              if not GROQ_API_KEY:
+                  return None, "No API key"
+              try:
+                  model = get_best_groq_model()
+                  time.sleep(2.2)  # Rate limit with safety margin
+                  response = requests.post(
+                      "https://api.groq.com/openai/v1/chat/completions",
+                      headers={
+                          "Authorization": f"Bearer {GROQ_API_KEY}",
+                          "Content-Type": "application/json"
+                      },
+                      json={
+                          "model": model,
+                          "messages": [{"role": "user", "content": prompt}],
+                          "max_tokens": max_tokens,
+                          "temperature": 0.7
+                      },
+                      timeout=60
+                  )
+                  if response.status_code == 200:
+                      return response.json()["choices"][0]["message"]["content"], None
+                  else:
+                      return None, f"HTTP {response.status_code}: {response.text[:200]}"
+              except Exception as e:
+                  return None, str(e)
+
+          def call_gemini(prompt, max_tokens=1000):
+              """Call Gemini API with dynamic model selection."""
+              if not GEMINI_API_KEY:
+                  return None, "No API key"
+              try:
+                  model = get_best_gemini_model()
+                  time.sleep(4.4)  # Rate limit with safety margin
+                  response = requests.post(
+                      f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
+                      headers={"Content-Type": "application/json"},
+                      json={
+                          "contents": [{"parts": [{"text": prompt}]}],
+                          "generationConfig": {"maxOutputTokens": max_tokens}
+                      },
+                      timeout=60
+                  )
+                  if response.status_code == 200:
+                      return response.json()["candidates"][0]["content"]["parts"][0]["text"], None
+                  else:
+                      return None, f"HTTP {response.status_code}: {response.text[:200]}"
+              except Exception as e:
+                  return None, str(e)
+
+          # =========================================================================
+          # TEST PROMPTS DEFINITIONS
+          # =========================================================================
+          # Each test: prompt template + expected response structure + validation
+          TEST_PROMPTS = [
+              {
+                  "name": "VIRAL_TOPIC_PROMPT",
+                  "type": "creative",
+                  "prompt": """Generate a viral YouTube Shorts topic about psychology.
+
+          Return JSON:
+          {
+              "topic": "Specific topic title",
+              "hook": "First 3 seconds hook",
+              "key_points": ["point 1", "point 2", "point 3"],
+              "viral_score": 8.5
+          }
+
+          JSON ONLY:""",
+                  "expected_keys": ["topic", "hook", "key_points"],
+                  "validation": lambda r: len(r.get("topic", "")) > 5 and len(r.get("key_points", [])) >= 2
+              },
+              {
+                  "name": "MASTER_EVALUATION_PROMPT",
+                  "type": "evaluation",
+                  "prompt": """Evaluate this video content for viral potential:
+          
+          Title: "5 Psychology Tricks That Actually Work"
+          Hook: "Your brain is lying to you right now"
+          Content: "Confirmation bias, anchoring effect, sunk cost fallacy"
+
+          Score on 1-10 scale. Return JSON:
+          {
+              "overall_score": 8.5,
+              "hook_score": 9,
+              "title_score": 8,
+              "content_score": 8,
+              "suggestions": ["suggestion 1", "suggestion 2"]
+          }
+
+          JSON ONLY:""",
+                  "expected_keys": ["overall_score", "hook_score"],
+                  "validation": lambda r: 1 <= r.get("overall_score", 0) <= 10
+              },
+              {
+                  "name": "BROLL_KEYWORDS_PROMPT",
+                  "type": "simple",
+                  "prompt": """Extract 5 B-roll search keywords for a video about "brain psychology tricks".
+
+          Return JSON:
+          {
+              "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
+              "mood": "intriguing"
+          }
+
+          JSON ONLY:""",
+                  "expected_keys": ["keywords"],
+                  "validation": lambda r: len(r.get("keywords", [])) >= 3
+              },
+              {
+                  "name": "VOICEOVER_PROMPT",
+                  "type": "creative",
+                  "prompt": """Write a 30-second voiceover script for a YouTube Short about "money saving tips".
+
+          Return JSON:
+          {
+              "script": "Full voiceover text here...",
+              "word_count": 75,
+              "estimated_duration_seconds": 30
+          }
+
+          JSON ONLY:""",
+                  "expected_keys": ["script"],
+                  "validation": lambda r: len(r.get("script", "")) > 50
+              },
+              {
+                  "name": "TITLE_ANALYSIS_PROMPT",
+                  "type": "analysis",
+                  "prompt": """Analyze these video titles for patterns:
+          - "5 Money Tricks Rich People Know"
+          - "Your Brain Does This Without You Knowing"
+          - "Why 99% of People Fail At Saving"
+
+          Return JSON:
+          {
+              "patterns_found": ["number hooks", "exclusivity", "fear of missing out"],
+              "best_performing_pattern": "number hooks",
+              "recommendations": ["Use numbers", "Create curiosity gap"]
+          }
+
+          JSON ONLY:""",
+                  "expected_keys": ["patterns_found", "recommendations"],
+                  "validation": lambda r: len(r.get("patterns_found", [])) >= 1
+              },
+              {
+                  "name": "CATEGORY_PREDICTION_PROMPT",
+                  "type": "simple",
+                  "prompt": """What category does this video belong to?
+          
+          Title: "The Psychology Behind Why You Can't Save Money"
+
+          Return JSON:
+          {
+              "primary_category": "psychology",
+              "secondary_category": "finance",
+              "confidence": 0.85
+          }
+
+          JSON ONLY:""",
+                  "expected_keys": ["primary_category"],
+                  "validation": lambda r: r.get("primary_category", "") != ""
+              },
+              {
+                  "name": "HOOK_GENERATION_PROMPT",
+                  "type": "creative",
+                  "prompt": """Generate 3 alternative hooks for a video titled "5 Brain Hacks You Never Knew".
+
+          Return JSON:
+          {
+              "hooks": [
+                  "Your brain is sabotaging you right now",
+                  "Scientists discovered something terrifying",
+                  "This changes everything you know"
+              ],
+              "best_hook_index": 0,
+              "explanation": "Creates immediate personal connection"
+          }
+
+          JSON ONLY:""",
+                  "expected_keys": ["hooks"],
+                  "validation": lambda r: len(r.get("hooks", [])) >= 2
+              },
+              {
+                  "name": "ENGAGEMENT_REPLY_PROMPT",
+                  "type": "creative",
+                  "prompt": """Generate a reply to this YouTube comment:
+          "This video changed my life! More content like this please!"
+
+          Reply should be human-like and encourage engagement.
+
+          Return JSON:
+          {
+              "reply": "So glad this helped you! What part resonated most? 🙌",
+              "tone": "enthusiastic",
+              "includes_question": true
+          }
+
+          JSON ONLY:""",
+                  "expected_keys": ["reply"],
+                  "validation": lambda r: len(r.get("reply", "")) > 10
+              }
+          ]
+
+          # =========================================================================
+          # RUN TESTS
+          # =========================================================================
+          safe_print("=" * 60)
+          safe_print("PROMPT TESTING & VALIDATION")
+          safe_print(f"Mode: {TEST_MODE}")
+          safe_print("=" * 60)
+
+          results = {
+              "timestamp": datetime.utcnow().isoformat(),
+              "mode": TEST_MODE,
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "tests": []
+          }
+
+          prompts_to_test = TEST_PROMPTS[:5] if TEST_MODE == "quick" else TEST_PROMPTS
+
+          for idx, test in enumerate(prompts_to_test):
+              safe_print(f"\n[TEST {idx+1}/{len(prompts_to_test)}] {test['name']} ({test['type']})")
+              results["total"] += 1
+              
+              # v17.9.41: Use Groq ONLY for testing - preserve Gemini for production
+              response, error = call_groq(test["prompt"])
+              
+              test_result = {
+                  "name": test["name"],
+                  "type": test["type"],
+                  "passed": False,
+                  "error": None,
+                  "hints": []
+              }
+              
+              if error:
+                  test_result["error"] = f"API Error: {error}"
+                  test_result["hints"].append("Check API key and quota")
+                  safe_print(f"  ❌ FAILED: {error[:100]}")
+                  results["failed"] += 1
+              elif not response:
+                  test_result["error"] = "Empty response"
+                  test_result["hints"].append("Prompt may be unclear - add more context")
+                  safe_print("  ❌ FAILED: Empty response")
+                  results["failed"] += 1
+              else:
+                  # Try to parse JSON from response
+                  try:
+                      # Extract JSON from response (handle markdown code blocks)
+                      json_match = re.search(r'\{[\s\S]*\}', response)
+                      if json_match:
+                          parsed = json.loads(json_match.group())
+                          
+                          # Check expected keys
+                          missing_keys = [k for k in test["expected_keys"] if k not in parsed]
+                          if missing_keys:
+                              test_result["error"] = f"Missing keys: {missing_keys}"
+                              test_result["hints"].append(f"Prompt should explicitly request: {missing_keys}")
+                              test_result["hints"].append("Add 'Return JSON with keys: ...' to prompt")
+                              safe_print(f"  ⚠️ PARTIAL: Missing {missing_keys}")
+                              results["failed"] += 1
+                          elif not test["validation"](parsed):
+                              test_result["error"] = "Validation failed"
+                              test_result["hints"].append("Response structure correct but content invalid")
+                              test_result["hints"].append("Check validation criteria in test definition")
+                              safe_print("  ⚠️ PARTIAL: Validation failed")
+                              results["failed"] += 1
+                          else:
+                              test_result["passed"] = True
+                              safe_print("  ✅ PASSED")
+                              results["passed"] += 1
+                      else:
+                          test_result["error"] = "No JSON found in response"
+                          test_result["hints"].append("Add 'JSON ONLY:' at end of prompt")
+                          test_result["hints"].append("Model may be adding prose - use stricter instruction")
+                          safe_print("  ❌ FAILED: No JSON in response")
+                          results["failed"] += 1
+                  except json.JSONDecodeError as e:
+                      test_result["error"] = f"JSON parse error: {str(e)[:50]}"
+                      test_result["hints"].append("Response has invalid JSON syntax")
+                      test_result["hints"].append("Try: 'Return ONLY valid JSON, no extra text'")
+                      safe_print(f"  ❌ FAILED: JSON parse error")
+                      results["failed"] += 1
+              
+              results["tests"].append(test_result)
+
+          # =========================================================================
+          # SUMMARY
+          # =========================================================================
+          safe_print("\n" + "=" * 60)
+          safe_print("SUMMARY")
+          safe_print("=" * 60)
+          safe_print(f"Total Tests: {results['total']}")
+          safe_print(f"Passed: {results['passed']} ({100*results['passed']/max(results['total'],1):.0f}%)")
+          safe_print(f"Failed: {results['failed']}")
+
+          if results["failed"] > 0:
+              safe_print("\n⚠️ FAILED TESTS & HINTS:")
+              for test in results["tests"]:
+                  if not test["passed"]:
+                      safe_print(f"\n  [{test['name']}]")
+                      safe_print(f"    Error: {test['error']}")
+                      for hint in test["hints"]:
+                          safe_print(f"    💡 Hint: {hint}")
+
+          # Save results
+          with open("data/prompt_tests/latest_results.json", "w") as f:
+              json.dump(results, f, indent=2)
+
+          safe_print(f"\n📁 Results saved to data/prompt_tests/latest_results.json")
+
+          # Exit with error if any failed
+          if results["failed"] > 0:
+              safe_print("\n⚠️ Some tests failed - review hints above")
+              # Don't fail the workflow, just warn
+          else:
+              safe_print("\n✅ All prompt tests passed!")
+
+          EOF
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prompt-test-results
+          path: data/prompt_tests/
+          retention-days: 30

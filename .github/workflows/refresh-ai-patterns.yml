@@ -1,0 +1,90 @@
+name: Refresh AI Patterns
+
+on:
+  schedule:
+    # Run weekly on Sunday at 6 AM UTC
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+    inputs:
+      force_refresh:
+        description: 'Force refresh even if patterns are fresh'
+        required: false
+        default: 'false'
+
+# v17.9.9: Required permissions for git push
+permissions:
+  contents: write
+
+jobs:
+  refresh-patterns:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: pip install google-generativeai groq
+
+    - name: Check quota before refresh
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        HTTP_CODE=$(curl -s -w "%{http_code}" -o /dev/null \
+          -H "Content-Type: application/json" \
+          -d '{"contents":[{"parts":[{"text":"Hi"}]}]}' \
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=$GEMINI_API_KEY")
+        
+        if [ "$HTTP_CODE" -eq 429 ]; then
+          echo "Quota exhausted. Skipping pattern refresh."
+          exit 0
+        fi
+        echo "Quota available. Proceeding with refresh."
+
+    - name: Refresh viral patterns with AI
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        PYTHONPATH: src:src/ai
+      run: python scripts/refresh_ai_patterns.py
+
+    # v17.9.9: Scan for new prompts and update registry
+    - name: Scan and Update Prompts Registry
+      env:
+        PYTHONPATH: src:src/ai
+      run: python scripts/scan_prompts_registry.py
+        
+    # v17.9.9: Refresh Smart Model Router rankings
+    - name: Refresh Smart Model Router
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+        PYTHONPATH: src:src/ai
+      run: python scripts/refresh_model_router.py
+
+    - name: Commit updated patterns and registry
+      run: |
+        git config user.name "ViralShorts Bot"
+        git config user.email "bot@viralshorts.factory"
+        
+        # Add all persistent data files that may have changed
+        git add data/persistent/viral_patterns.json || true
+        git add data/persistent/prompts_registry.json || true
+        git add data/persistent/smart_router_cache.json || true
+        
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "chore: Weekly AI refresh - patterns, prompts, models"
+          git push
+          echo "Updates committed and pushed!"
+        fi

@@ -1,0 +1,804 @@
+name: Weekly Analytics Feedback - Learn from Our Performance (v10.0)
+
+# Runs weekly to analyze OUR video performance and adjust strategy
+# v10.0: Now includes:
+#   - Comment sentiment analysis (positive/negative ratios)
+#   - Peak publishing time learning
+#   - Title length optimization
+#   - Intro pattern learning
+#   - Thumbnail text performance
+# v9.5: Hook words, category decay, series detection, shadow-ban
+# Fully autonomous - no human intervention needed!
+
+on:
+  # v17.9.39: DAILY analytics for fast learning (was 2x/week)
+  # We have 17,000 daily quota - use it for learning!
+  schedule:
+    - cron: '0 2 * * *'  # Every day at 2 AM UTC
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+
+jobs:
+  analyze-our-performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check quota before starting
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o /dev/null \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"maxOutputTokens":1}}' \
+            2>/dev/null || echo "000")
+          if [ "$HTTP_CODE" = "429" ]; then
+            echo "::warning::QUOTA EXHAUSTED - Skipping. Will retry at next scheduled time."
+            exit 78
+          fi
+          echo "Quota OK - proceeding"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Restore persistent state
+        run: |
+          mkdir -p data/persistent
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=persistent-state&per_page=1" \
+            | jq -r '.artifacts[0].id')
+          if [ "$ARTIFACT_ID" != "null" ] && [ -n "$ARTIFACT_ID" ]; then
+            curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+              -o /tmp/state.zip && unzip -o /tmp/state.zip -d data/persistent/ 2>/dev/null || true
+            echo "[OK] Restored state"
+          fi
+        continue-on-error: true
+
+      - name: Create directories
+        run: mkdir -p data/persistent
+
+      # ================================================================
+      # v16.8: AI-DRIVEN SCHEDULE CHECK
+      # Decide if we should actually run based on learning
+      # ================================================================
+      - name: Check Schedule Advisor
+        id: schedule_check
+        run: |
+          python << 'EOF'
+          import json
+          from pathlib import Path
+          
+          SCHEDULE_FILE = Path("data/persistent/schedule_advisor.json")
+          VARIETY_FILE = Path("data/persistent/variety_state.json")
+          
+          # Count videos since last analytics
+          videos_since_last = 0
+          try:
+              if VARIETY_FILE.exists():
+                  with open(VARIETY_FILE) as f:
+                      variety = json.load(f)
+                      videos_since_last = len(variety.get("recent_topics", []))
+          except:
+              pass
+          
+          # Check schedule advisor recommendation
+          should_run = True  # Default to yes
+          try:
+              if SCHEDULE_FILE.exists():
+                  with open(SCHEDULE_FILE) as f:
+                      advisor = json.load(f)
+                      rec = advisor.get("analytics_feedback", {})
+                      
+                      # Check if we should skip
+                      if rec.get("skip_if_no_new_videos", False) and videos_since_last == 0:
+                          print("[SCHEDULE] AI recommends skipping: No new videos")
+                          should_run = False
+                      
+                      min_videos = rec.get("min_videos_for_analysis", 3)
+                      if videos_since_last < min_videos:
+                          print(f"[SCHEDULE] AI recommends skipping: Need {min_videos} videos, have {videos_since_last}")
+                          should_run = False
+          except Exception as e:
+              print(f"[SCHEDULE] Advisor check failed: {e}")
+          
+          # Output decision
+          print(f"should_run={'true' if should_run else 'false'}")
+          with open("schedule_decision.txt", "w") as f:
+              f.write("true" if should_run else "false")
+          EOF
+          
+          SHOULD_RUN=$(cat schedule_decision.txt || echo "true")
+          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
+          echo "Schedule decision: $SHOULD_RUN"
+        continue-on-error: true
+
+      # ================================================================
+      # FETCH PERFORMANCE DATA FROM OUR YOUTUBE CHANNEL
+      # ================================================================
+      - name: Fetch Our Video Performance
+        if: steps.schedule_check.outputs.should_run != 'false'
+        run: |
+          python << 'EOF'
+          import os
+          import json
+          import requests
+          from datetime import datetime, timedelta
+          from pathlib import Path
+
+          YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID")
+          YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET")
+          YOUTUBE_REFRESH_TOKEN = os.environ.get("YOUTUBE_REFRESH_TOKEN")
+          GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+          ANALYTICS_FILE = Path("data/persistent/analytics_state.json")
+          VARIETY_FILE = Path("data/persistent/variety_state.json")
+          VIRAL_PATTERNS_FILE = Path("data/persistent/viral_patterns.json")
+
+          def safe_print(msg):
+              try: print(msg)
+              except: print(msg.encode('ascii', 'ignore').decode())
+
+          def get_best_groq_model():
+              """DYNAMIC: Discover and select best available Groq model."""
+              if not GROQ_API_KEY:
+                  return "llama-3.3-70b-versatile"
+              try:
+                  response = requests.get(
+                      "https://api.groq.com/openai/v1/models",
+                      headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                      timeout=10
+                  )
+                  if response.status_code == 200:
+                      models = response.json().get("data", [])
+                      for model in models:
+                          if "llama" in model.get("id", "") and "70b" in model.get("id", ""):
+                              return model["id"]
+                      for model in models:
+                          if "mixtral" in model.get("id", ""):
+                              return model["id"]
+                      for model in models:
+                          if model.get("active", True):
+                              return model.get("id")
+              except:
+                  pass
+              return "llama-3.3-70b-versatile"
+
+          def get_access_token():
+              """Get fresh YouTube access token."""
+              if not all([YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN]):
+                  return None
+              
+              try:
+                  response = requests.post(
+                      "https://oauth2.googleapis.com/token",
+                      data={
+                          "client_id": YOUTUBE_CLIENT_ID,
+                          "client_secret": YOUTUBE_CLIENT_SECRET,
+                          "refresh_token": YOUTUBE_REFRESH_TOKEN,
+                          "grant_type": "refresh_token",
+                      },
+                      timeout=15
+                  )
+                  if response.status_code == 200:
+                      return response.json().get("access_token")
+              except Exception as e:
+                  safe_print(f"[!] Token error: {e}")
+              return None
+
+          def get_our_videos(access_token, max_results=50):
+              """Get our channel's recent videos."""
+              if not access_token:
+                  return []
+              
+              headers = {"Authorization": f"Bearer {access_token}"}
+              
+              try:
+                  # Get our channel
+                  response = requests.get(
+                      "https://www.googleapis.com/youtube/v3/channels",
+                      params={"part": "contentDetails", "mine": "true"},
+                      headers=headers,
+                      timeout=15
+                  )
+                  
+                  if response.status_code != 200:
+                      safe_print(f"[!] Channel fetch failed: {response.status_code}")
+                      return []
+                  
+                  data = response.json()
+                  if not data.get("items"):
+                      return []
+                  
+                  uploads_playlist = data["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+                  
+                  # Get videos from playlist
+                  response = requests.get(
+                      "https://www.googleapis.com/youtube/v3/playlistItems",
+                      params={
+                          "part": "snippet",
+                          "playlistId": uploads_playlist,
+                          "maxResults": max_results
+                      },
+                      headers=headers,
+                      timeout=15
+                  )
+                  
+                  if response.status_code != 200:
+                      return []
+                  
+                  videos = []
+                  for item in response.json().get("items", []):
+                      videos.append({
+                          "id": item["snippet"]["resourceId"]["videoId"],
+                          "title": item["snippet"]["title"],
+                          "published": item["snippet"]["publishedAt"]
+                      })
+                  
+                  return videos
+              except Exception as e:
+                  safe_print(f"[!] Get videos error: {e}")
+                  return []
+
+          def get_video_stats(access_token, video_ids):
+              """Get stats for our videos."""
+              if not access_token or not video_ids:
+                  return {}
+              
+              headers = {"Authorization": f"Bearer {access_token}"}
+              
+              try:
+                  response = requests.get(
+                      "https://www.googleapis.com/youtube/v3/videos",
+                      params={
+                          "part": "statistics",
+                          "id": ",".join(video_ids[:50])
+                      },
+                      headers=headers,
+                      timeout=15
+                  )
+                  
+                  if response.status_code == 200:
+                      stats = {}
+                      for item in response.json().get("items", []):
+                          stats[item["id"]] = {
+                              "views": int(item["statistics"].get("viewCount", 0)),
+                              "likes": int(item["statistics"].get("likeCount", 0)),
+                              "comments": int(item["statistics"].get("commentCount", 0))
+                          }
+                      return stats
+              except Exception as e:
+                  safe_print(f"[!] Stats error: {e}")
+              return {}
+          
+          def get_video_comments(access_token, video_id, max_results=25):
+              """v9.0: Get comments for a video for mining insights."""
+              if not access_token:
+                  return []
+              
+              headers = {"Authorization": f"Bearer {access_token}"}
+              
+              try:
+                  response = requests.get(
+                      "https://www.googleapis.com/youtube/v3/commentThreads",
+                      params={
+                          "part": "snippet",
+                          "videoId": video_id,
+                          "maxResults": max_results,
+                          "order": "relevance"
+                      },
+                      headers=headers,
+                      timeout=15
+                  )
+                  
+                  if response.status_code == 200:
+                      comments = []
+                      for item in response.json().get("items", []):
+                          comment = item["snippet"]["topLevelComment"]["snippet"]["textOriginal"]
+                          comments.append(comment)
+                      return comments
+              except Exception as e:
+                  safe_print(f"[!] Comments error: {e}")
+              return []
+          
+          def check_shadow_ban_indicators(videos_with_stats):
+              """v9.0: Check for potential shadow-ban indicators."""
+              if len(videos_with_stats) < 5:
+                  return {"status": "insufficient_data"}
+              
+              # Sort by date (newest first)
+              sorted_videos = sorted(videos_with_stats, 
+                                     key=lambda x: x.get("published", ""), 
+                                     reverse=True)
+              
+              # Compare recent 5 vs older 5
+              recent_5 = sorted_videos[:5]
+              older_5 = sorted_videos[5:10] if len(sorted_videos) >= 10 else sorted_videos[5:]
+              
+              if not older_5:
+                  return {"status": "insufficient_data"}
+              
+              recent_avg = sum(v.get("views", 0) for v in recent_5) / len(recent_5)
+              older_avg = sum(v.get("views", 0) for v in older_5) / len(older_5)
+              
+              if older_avg > 0:
+                  ratio = recent_avg / older_avg
+              else:
+                  ratio = 1.0
+              
+              return {
+                  "status": "concerning" if ratio < 0.2 else "normal",
+                  "recent_avg_views": int(recent_avg),
+                  "older_avg_views": int(older_avg),
+                  "ratio": round(ratio, 2),
+                  "action": "PAUSE AND INVESTIGATE" if ratio < 0.2 else "Continue normal operation"
+              }
+
+          def analyze_performance_with_ai(videos_with_stats, comments=None):
+              """AI performs MICRO-LEVEL analysis of OUR performance.
+              v9.0: Now also analyzes comments for audience insights.
+              """
+              if not GROQ_API_KEY or not videos_with_stats:
+                  return {}
+              
+              comment_section = ""
+              if comments:
+                  comment_section = f"""
+          
+          VIEWER COMMENTS (mine these for insights!):
+          {json.dumps(comments[:30], indent=2)}
+          
+          COMMENT ANALYSIS REQUIRED:
+          - What do viewers LOVE? (do more of this)
+          - What do viewers CRITICIZE? (avoid this)
+          - Any "this is AI" or fake accusations? (quality red flags)
+          - What topics do viewers REQUEST?
+          """
+              
+              prompt = f"""You are our viral video expert. Perform DEEP MICRO-ANALYSIS of our YouTube Shorts:
+
+          OUR VIDEO DATA (with performance stats):
+          {json.dumps(videos_with_stats[:15], indent=2)}
+          {comment_section}
+
+          MICRO-ANALYZE EVERYTHING for maximum virality:
+
+          1. **CATEGORY PERFORMANCE**: Which categories got most views?
+          2. **TITLE TRICKS**: What title structures performed best? Numbers, power words, curiosity gaps
+          3. **HOOK PATTERNS**: What hooks stopped the scroll? Questions? Shocking statements? Countdowns?
+          4. **ENGAGEMENT BAITS**: What drove comments? Questions? Challenges? Controversies?
+          5. **PSYCHOLOGICAL TRIGGERS**: Fear of missing out? Curiosity? Surprise? Validation?
+          6. **MUSIC MOOD CORRELATION**: What moods correlate with high engagement?
+          7. **VOICE STYLES**: Energetic? Calm? Mysterious? Which worked best?
+          8. **CONTENT THEMES**: What specific angles within categories work?
+          9. **VIRALITY HACKS**: Any patterns in our best videos that made them spread?
+          10. **CALL-TO-ACTIONS**: What CTAs drove most engagement?
+          11. **POSTING TIME ANALYSIS**: Based on publish dates, what day/time seems to work best?
+          12. **TITLE STYLE ANALYSIS**: If detectable, which title styles (number_hook, curiosity_gap, shocking) perform best?
+
+          Return comprehensive JSON with GOLD-VALUE insights:
+          {{
+              "best_performing_categories": ["category1", "category2"],
+              "title_tricks_that_work": ["use numbers", "curiosity gaps", ...],
+              "best_title_patterns": ["pattern with {{placeholder}}", ...],
+              "optimal_title_word_count": number,
+              "optimal_duration": number (ideal video length in seconds, 15-30),
+              "optimal_phrase_count": number (ideal phrases per video, 3-6),
+              "optimal_words_per_phrase": number (ideal words, 8-18),
+              "hook_types_that_work": ["question hook", "shocking statement", ...],
+              "psychological_triggers": ["curiosity", "fomo", ...],
+              "engagement_baits": ["comment if...", "type 1 if...", ...],
+              "best_music_moods": ["dramatic", "mysterious", ...],
+              "best_voice_styles": ["energetic", "calm", ...],
+              "best_content_themes": ["money secrets", "psychology tricks", ...],
+              "virality_hacks": ["specific hack 1", "specific hack 2", ...],
+              "do_more": ["specific action 1", "specific action 2"],
+              "avoid": ["specific thing to avoid 1", ...],
+              "next_video_suggestions": ["very specific topic 1", "topic 2", "topic 3"],
+              "category_weights": {{"category1": 0.3, "category2": 0.25, ...}},
+              "key_insight": "One sentence summary of most important finding",
+              "priority_improvements": ["highest priority", "second priority", ...],
+              "best_posting_days": ["Monday", "Friday", ...],
+              "best_posting_hours_utc": [14, 18, ...],
+              "best_title_styles": ["number_hook", "curiosity_gap", ...],
+              "comment_insights": {{
+                  "viewer_loves": ["what viewers praise"],
+                  "viewer_requests": ["what viewers want to see"],
+                  "quality_concerns": ["any AI detection or fake accusations"],
+                  "engagement_drivers": ["topics that spark discussion"]
+              }}
+          }}
+
+          Be SPECIFIC and ACTIONABLE based on ACTUAL numbers. JSON ONLY."""
+
+              try:
+                  model = get_best_groq_model()
+                  safe_print(f"[AI] Using Groq model: {model}")
+                  response = requests.post(
+                      "https://api.groq.com/openai/v1/chat/completions",
+                      headers={
+                          "Authorization": f"Bearer {GROQ_API_KEY}",
+                          "Content-Type": "application/json"
+                      },
+                      json={
+                          "model": model,
+                          "messages": [{"role": "user", "content": prompt}],
+                          "temperature": 0.7,
+                          "max_tokens": 800
+                      },
+                      timeout=30
+                  )
+                  
+                  if response.status_code == 200:
+                      content = response.json()["choices"][0]["message"]["content"]
+                      import re
+                      match = re.search(r'\{[\s\S]*\}', content)
+                      if match:
+                          return json.loads(match.group())
+              except Exception as e:
+                  safe_print(f"[!] AI analysis error: {e}")
+              return {}
+
+          # ================================================================
+          # MAIN FLOW
+          # ================================================================
+          safe_print("=" * 60)
+          safe_print("WEEKLY ANALYTICS FEEDBACK")
+          safe_print(f"Date: {datetime.now().isoformat()}")
+          safe_print("=" * 60)
+
+          # Get access token
+          access_token = get_access_token()
+          if not access_token:
+              safe_print("[!] Could not get YouTube access token")
+              exit(0)
+
+          safe_print("[OK] YouTube authenticated")
+
+          # Get our videos
+          our_videos = get_our_videos(access_token, max_results=50)
+          safe_print(f"[OK] Found {len(our_videos)} videos")
+
+          if not our_videos:
+              safe_print("[!] No videos found - nothing to analyze")
+              exit(0)
+
+          # Get stats
+          video_ids = [v["id"] for v in our_videos]
+          stats = get_video_stats(access_token, video_ids)
+          safe_print(f"[OK] Got stats for {len(stats)} videos")
+
+          # Merge stats with video data
+          for video in our_videos:
+              if video["id"] in stats:
+                  video.update(stats[video["id"]])
+
+          # Sort by views
+          our_videos.sort(key=lambda x: x.get("views", 0), reverse=True)
+
+          safe_print("\n[TOP PERFORMERS]")
+          for i, v in enumerate(our_videos[:5], 1):
+              safe_print(f"  {i}. {v.get('views', 0):,} views - {v.get('title', 'N/A')[:50]}")
+          
+          # v9.0: Shadow-ban check
+          safe_print("\n[SHADOW-BAN CHECK]")
+          shadow_check = check_shadow_ban_indicators(our_videos)
+          safe_print(f"  Status: {shadow_check.get('status', 'unknown')}")
+          if shadow_check.get('status') == 'concerning':
+              safe_print(f"  WARNING: Recent avg {shadow_check.get('recent_avg_views')} vs older {shadow_check.get('older_avg_views')}")
+              safe_print(f"  Action: {shadow_check.get('action')}")
+          
+          # v9.0: Comment mining for top videos (cost-effective: only top 3)
+          safe_print("\n[COMMENT MINING]")
+          all_comments = []
+          for video in our_videos[:3]:  # Top 3 only to save quota
+              video_id = video.get("id")
+              if video_id:
+                  comments = get_video_comments(access_token, video_id, max_results=10)
+                  all_comments.extend(comments)
+                  safe_print(f"  Mined {len(comments)} comments from '{video.get('title', 'N/A')[:30]}...'")
+          
+          safe_print(f"  Total comments collected: {len(all_comments)}")
+
+          # AI Analysis (v9.0: includes comments)
+          safe_print("\n[AI ANALYSIS]")
+          analysis = analyze_performance_with_ai(our_videos, comments=all_comments)
+
+          if analysis:
+              safe_print(f"  Key insight: {analysis.get('key_insight', 'N/A')}")
+              safe_print(f"  Best categories: {analysis.get('best_performing_categories', [])}")
+              safe_print(f"  Do more: {analysis.get('do_more', [])[:2]}")
+              
+              # Update variety state with ALL learned preferences (MICRO-LEVEL)
+              variety_state = {}
+              if VARIETY_FILE.exists():
+                  try:
+                      with open(VARIETY_FILE, 'r') as f:
+                          variety_state = json.load(f)
+                  except:
+                      pass
+              
+              # Category weights from performance
+              if analysis.get("category_weights"):
+                  variety_state["learned_weights"] = analysis["category_weights"]
+              
+              if analysis.get("best_performing_categories"):
+                  variety_state["preferred_categories"] = analysis["best_performing_categories"]
+              
+              if analysis.get("avoid"):
+                  variety_state["avoid_categories"] = analysis["avoid"]
+              
+              # MICRO-LEVEL preferences
+              if analysis.get("best_music_moods"):
+                  variety_state["preferred_music_moods"] = analysis["best_music_moods"]
+              
+              if analysis.get("best_voice_styles"):
+                  variety_state["preferred_voice_styles"] = analysis["best_voice_styles"]
+              
+              if analysis.get("best_content_themes"):
+                  variety_state["preferred_themes"] = analysis["best_content_themes"]
+              
+              if analysis.get("priority_improvements"):
+                  variety_state["priority_improvements"] = analysis["priority_improvements"]
+              
+              # GOLD-VALUE: Tricks, Baits, Hacks
+              if analysis.get("title_tricks_that_work"):
+                  variety_state["title_tricks"] = analysis["title_tricks_that_work"]
+              
+              if analysis.get("hook_types_that_work"):
+                  variety_state["hook_types"] = analysis["hook_types_that_work"]
+              
+              if analysis.get("psychological_triggers"):
+                  variety_state["psych_triggers"] = analysis["psychological_triggers"]
+              
+              if analysis.get("engagement_baits"):
+                  variety_state["engagement_baits"] = analysis["engagement_baits"]
+              
+              if analysis.get("virality_hacks"):
+                  variety_state["virality_hacks"] = analysis["virality_hacks"]
+              
+              # AUDIENCE TARGETING: Optimal posting times
+              if analysis.get("best_posting_days"):
+                  variety_state["best_posting_days"] = analysis["best_posting_days"]
+              
+              if analysis.get("best_posting_hours_utc"):
+                  variety_state["best_posting_hours_utc"] = analysis["best_posting_hours_utc"]
+              
+              # A/B TITLE TESTING: Learn which title styles work
+              if analysis.get("best_title_styles"):
+                  variety_state["best_title_styles"] = analysis["best_title_styles"]
+              
+              variety_state["last_feedback"] = datetime.now().isoformat()
+              
+              with open(VARIETY_FILE, 'w') as f:
+                  json.dump(variety_state, f, indent=2)
+              
+              # Update viral patterns with ALL micro-level patterns
+              viral_patterns = {}
+              if VIRAL_PATTERNS_FILE.exists():
+                  try:
+                      with open(VIRAL_PATTERNS_FILE, 'r') as f:
+                          viral_patterns = json.load(f)
+                  except:
+                      pass
+              
+              if analysis.get("best_title_patterns"):
+                  existing = viral_patterns.get("our_best_patterns", [])
+                  for p in analysis["best_title_patterns"]:
+                      if p not in existing:
+                          existing.append(p)
+                  viral_patterns["our_best_patterns"] = existing[-10:]
+              
+              if analysis.get("next_video_suggestions"):
+                  viral_patterns["ai_suggested_topics"] = analysis["next_video_suggestions"]
+              
+              if analysis.get("engagement_insights"):
+                  viral_patterns["engagement_insights"] = analysis["engagement_insights"]
+              
+              if analysis.get("optimal_title_word_count"):
+                  viral_patterns["optimal_title_word_count"] = analysis["optimal_title_word_count"]
+              
+              # HYBRID LEARNING: Optimal video metrics (with guardrails applied in generator)
+              if analysis.get("optimal_duration"):
+                  viral_patterns["optimal_duration"] = analysis["optimal_duration"]
+              
+              if analysis.get("optimal_phrase_count"):
+                  viral_patterns["optimal_phrase_count"] = analysis["optimal_phrase_count"]
+              
+              if analysis.get("optimal_words_per_phrase"):
+                  viral_patterns["optimal_words_per_phrase"] = analysis["optimal_words_per_phrase"]
+              
+              viral_patterns["last_performance_update"] = datetime.now().isoformat()
+              viral_patterns["key_insight"] = analysis.get("key_insight", "")
+              
+              with open(VIRAL_PATTERNS_FILE, 'w') as f:
+                  json.dump(viral_patterns, f, indent=2)
+              
+              # v9.0: Save comment insights
+              if analysis.get("comment_insights"):
+                  variety_state["comment_insights"] = analysis["comment_insights"]
+                  safe_print(f"  -> Comment insights saved")
+              
+              # Save full analytics
+              analytics_state = {
+                  "videos": our_videos[:50],
+                  "analysis": analysis,
+                  "last_updated": datetime.now().isoformat(),
+                  "total_views": sum(v.get("views", 0) for v in our_videos),
+                  "avg_views": sum(v.get("views", 0) for v in our_videos) / len(our_videos) if our_videos else 0,
+                  "shadow_ban_check": shadow_check,
+                  "comment_count_analyzed": len(all_comments)
+              }
+              
+              with open(ANALYTICS_FILE, 'w') as f:
+                  json.dump(analytics_state, f, indent=2)
+              
+              # v9.5: Update hook word performance tracker
+              avg_views = analytics_state["avg_views"]
+              hook_word_file = Path("data/persistent/hook_word_performance.json")
+              hook_data = {"words": {}, "last_updated": datetime.now().isoformat()}
+              if hook_word_file.exists():
+                  try:
+                      with open(hook_word_file, 'r') as f:
+                          hook_data = json.load(f)
+                  except:
+                      pass
+              
+              # Extract and score words from high-performing titles
+              import re
+              for video in our_videos[:20]:  # Top 20 for learning
+                  title = video.get("title", "")
+                  views = video.get("views", 0)
+                  if title and avg_views > 0:
+                      performance = views / avg_views
+                      words = re.findall(r'\b[a-zA-Z]{3,}\b', title.lower())
+                      for word in words:
+                          if word not in hook_data["words"]:
+                              hook_data["words"][word] = {"total_performance": 0, "count": 0}
+                          hook_data["words"][word]["total_performance"] += performance
+                          hook_data["words"][word]["count"] += 1
+              
+              with open(hook_word_file, 'w') as f:
+                  json.dump(hook_data, f, indent=2)
+              safe_print("  -> hook_word_performance.json updated")
+              
+              # v9.5: Update category decay tracker
+              category_decay_file = Path("data/persistent/category_decay.json")
+              decay_data = {"category_history": {}, "last_updated": datetime.now().isoformat()}
+              if category_decay_file.exists():
+                  try:
+                      with open(category_decay_file, 'r') as f:
+                          decay_data = json.load(f)
+                  except:
+                      pass
+              
+              # Extract categories from titles and record performance
+              for video in our_videos[:30]:
+                  title = video.get("title", "").lower()
+                  views = video.get("views", 0)
+                  # Try to detect category from title
+                  categories_detected = []
+                  if "money" in title or "save" in title or "$" in title:
+                      categories_detected.append("finance")
+                  if "brain" in title or "mind" in title or "think" in title:
+                      categories_detected.append("psychology")
+                  if "hack" in title or "trick" in title:
+                      categories_detected.append("life_hacks")
+                  if "fact" in title or "true" in title:
+                      categories_detected.append("shocking_facts")
+                  if "health" in title or "body" in title:
+                      categories_detected.append("health")
+                  
+                  for cat in categories_detected:
+                      if cat not in decay_data["category_history"]:
+                          decay_data["category_history"][cat] = []
+                      decay_data["category_history"][cat].append({
+                          "date": datetime.now().isoformat(),
+                          "performance": views / avg_views if avg_views > 0 else 1.0
+                      })
+              
+              decay_data["last_updated"] = datetime.now().isoformat()
+              with open(category_decay_file, 'w') as f:
+                  json.dump(decay_data, f, indent=2)
+              safe_print("  -> category_decay.json updated")
+              
+              # v9.5: Check for series candidates (high performers)
+              series_file = Path("data/persistent/series_state.json")
+              series_data = {"active_series": [], "completed_series": [], "series_candidates": [], "last_updated": None}
+              if series_file.exists():
+                  try:
+                      with open(series_file, 'r') as f:
+                          series_data = json.load(f)
+                  except:
+                      pass
+              
+              # Videos performing 1.5x+ average are series candidates
+              for video in our_videos:
+                  views = video.get("views", 0)
+                  if avg_views > 0 and views >= avg_views * 1.5:
+                      title = video.get("title", "Unknown")
+                      # Check if already a candidate
+                      existing = [c.get("original_title") for c in series_data.get("series_candidates", [])]
+                      if title not in existing:
+                          series_data["series_candidates"].append({
+                              "original_title": title,
+                              "views": views,
+                              "performance_multiplier": round(views / avg_views, 2),
+                              "detected_at": datetime.now().isoformat(),
+                              "series_started": False
+                          })
+                          safe_print(f"  -> Series candidate: {title[:40]}... ({views / avg_views:.1f}x avg)")
+              
+              series_data["series_candidates"] = series_data.get("series_candidates", [])[-20:]  # Keep 20
+              series_data["last_updated"] = datetime.now().isoformat()
+              with open(series_file, 'w') as f:
+                  json.dump(series_data, f, indent=2)
+              
+              safe_print("\n[SAVED] Analytics feedback saved (v9.5)!")
+              safe_print("  -> variety_state.json updated with learned preferences")
+              safe_print("  -> viral_patterns.json updated with best patterns")
+              safe_print("  -> hook_word_performance.json updated with word scores")
+              safe_print("  -> category_decay.json updated with time-weighted data")
+              safe_print("  -> series_state.json updated with candidates")
+              safe_print("  -> Video generator will use ALL of these automatically!")
+          else:
+              safe_print("[!] AI analysis returned no results")
+
+          safe_print("\n" + "=" * 60)
+          safe_print("FEEDBACK COMPLETE - Next generation will use learnings!")
+          safe_print("=" * 60)
+          EOF
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+
+      - name: Save updated state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: persistent-state
+          path: data/persistent/
+          retention-days: 30
+          overwrite: true
+
+      - name: Summary
+        run: |
+          echo "## Weekly Analytics Feedback Complete (v10.0)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### The Autonomous Feedback Loop" >> $GITHUB_STEP_SUMMARY
+          echo "1. Fetched performance data from our YouTube channel" >> $GITHUB_STEP_SUMMARY
+          echo "2. AI analyzed what's working and what's not" >> $GITHUB_STEP_SUMMARY
+          echo "3. Updated variety preferences (category weights)" >> $GITHUB_STEP_SUMMARY
+          echo "4. Updated viral patterns (best title patterns)" >> $GITHUB_STEP_SUMMARY
+          echo "5. Next video generation will use these automatically!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### v10.0 Enhancements Active" >> $GITHUB_STEP_SUMMARY
+          echo "- Comment sentiment tracking" >> $GITHUB_STEP_SUMMARY
+          echo "- Peak publishing time learning" >> $GITHUB_STEP_SUMMARY
+          echo "- Title length optimization" >> $GITHUB_STEP_SUMMARY
+          echo "- Intro pattern analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### v9.5 Enhancements Active" >> $GITHUB_STEP_SUMMARY
+          echo "- Hook word tracking, Category decay, Series detection" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### No Human Intervention Needed!" >> $GITHUB_STEP_SUMMARY
+          echo "This workflow runs every Sunday and feeds learnings back." >> $GITHUB_STEP_SUMMARY
+

@@ -1,0 +1,102 @@
+name: Monthly Viral Analysis - Learn from Top AI Shorts (v9.5)
+
+# Runs once a month to analyze successful AI-generated Shorts channels
+# and feed learnings back into our video generation system
+# v9.5: Seasonal calendar, hook word analysis, series detection
+
+on:
+  # v17.9.9: RE-ENABLED - Smart router provides 4100+ calls/day
+  # Bi-weekly: 1st and 15th of each month at 3 AM UTC (catch trends faster)
+  schedule:
+    - cron: '0 3 1,15 * *'
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+
+jobs:
+  analyze-viral-channels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-api-python-client
+
+      - name: Restore persistent state
+        run: |
+          mkdir -p data/persistent
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=persistent-state&per_page=1" \
+            | jq -r '.artifacts[0].id')
+          if [ "$ARTIFACT_ID" != "null" ] && [ -n "$ARTIFACT_ID" ]; then
+            curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+              -o /tmp/state.zip && unzip -o /tmp/state.zip -d data/persistent/ 2>/dev/null || true
+            echo "[OK] Restored state"
+          fi
+        continue-on-error: true
+
+      - name: Create data directories
+        run: mkdir -p data/persistent data/analysis
+
+      # ================================================================
+      # MAIN ANALYSIS: Find and learn from top AI-generated Shorts
+      # ================================================================
+      - name: Analyze Top AI Shorts Channels
+        id: analysis
+        run: python monthly_analysis.py
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+
+      # Save updated patterns for video generator to use
+      - name: Save updated patterns
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: persistent-state
+          path: data/persistent/
+          retention-days: 30
+          overwrite: true
+
+      - name: Summary
+        run: |
+          echo "## Monthly Viral Analysis Complete (v9.5)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### What This Does" >> $GITHUB_STEP_SUMMARY
+          echo "1. Searches YouTube for top-performing AI-generated Shorts" >> $GITHUB_STEP_SUMMARY
+          echo "2. Analyzes title patterns, hooks, engagement tactics" >> $GITHUB_STEP_SUMMARY
+          echo "3. Uses AI to extract reusable patterns" >> $GITHUB_STEP_SUMMARY
+          echo "4. Saves patterns to persistent state" >> $GITHUB_STEP_SUMMARY
+          echo "5. Video generator uses these patterns automatically!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### v9.5 Enhancements" >> $GITHUB_STEP_SUMMARY
+          echo "- Hook word performance analysis" >> $GITHUB_STEP_SUMMARY
+          echo "- Seasonal content calendar generation" >> $GITHUB_STEP_SUMMARY
+          echo "- Competitor channel tracking" >> $GITHUB_STEP_SUMMARY
+          echo "- Content recycling suggestions" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Quota Used" >> $GITHUB_STEP_SUMMARY
+          echo "- YouTube API: ~30-50 read operations (very cheap)" >> $GITHUB_STEP_SUMMARY
+          echo "- Groq: ~1500 tokens for analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "The next video generation will automatically use the new patterns!" >> $GITHUB_STEP_SUMMARY

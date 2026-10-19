@@ -1,0 +1,98 @@
+name: Pre-Work Data Fetcher
+
+# This workflow runs ONCE per day to pre-generate all video concepts
+# Subsequent video generation workflows use this cached data, saving 50-70% API quota!
+
+on:
+  workflow_dispatch:
+    inputs:
+      concept_count:
+        description: 'Number of concepts to pre-generate'
+        required: false
+        default: '20'
+
+  # v17.5.2: Auto-skip if quota exhausted (no manual enable/disable needed)
+  # Run once per day, early morning (before video generation starts)
+  schedule:
+    - cron: '30 5 * * *'  # 5:30 AM UTC (30 min before first video workflow)
+
+# v17.9.13: Grant write permission so we can push pre-generated data
+permissions:
+  contents: write
+
+jobs:
+  pre-work:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check API availability (FREE - no quota cost)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # v17.9.13: Use FREE models list endpoint instead of generateContent!
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o /dev/null \
+            "https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}" \
+            2>/dev/null || echo "000")
+          if [ "$HTTP_CODE" = "429" ]; then
+            echo "::warning::API rate limited - will retry at next scheduled time."
+            exit 78
+          elif [ "$HTTP_CODE" = "200" ]; then
+            echo "API available - proceeding"
+          else
+            echo "::warning::API check returned $HTTP_CODE - proceeding anyway"
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install groq google-generativeai
+
+      - name: Run Pre-Work Fetcher
+        run: python pre_work_fetcher.py
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+
+      - name: Upload pre-generated data
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-generated-concepts
+          path: data/pre_generated_concepts.json
+          retention-days: 1
+
+      - name: Commit cached data (for other workflows)
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/pre_generated_concepts.json || true
+          git commit -m "Pre-work: Generated $(date +%Y-%m-%d) concepts" || echo "No changes to commit"
+          git push || echo "Push failed (probably no changes)"
+
+      - name: Summary
+        run: |
+          echo "=============================================="
+          echo "   PRE-WORK COMPLETE"
+          echo "=============================================="
+          if [ -f data/pre_generated_concepts.json ]; then
+            CONCEPT_COUNT=$(python3 -c "import json; d=json.load(open('data/pre_generated_concepts.json')); print(len(d.get('concepts', [])))")
+            echo "Concepts generated: $CONCEPT_COUNT"
+          fi
+
+
+
+
+
+
+
+

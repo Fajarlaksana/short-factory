@@ -1,0 +1,138 @@
+name: TEST - Generate Single Video (No Upload)
+
+# This workflow generates ONE video for testing purposes
+# - Skips all upload steps (YouTube, Dailymotion)
+# - Skips analytics feedback
+# - Skips randomization delays
+# - Outputs video as downloadable artifact
+# 
+# TRIGGER: Manual only (workflow_dispatch)
+# USE CASE: Test video quality, watch the result, verify enhancements
+
+on:
+  workflow_dispatch:
+    inputs:
+      category:
+        description: 'Video category (leave empty for AI to decide)'
+        required: false
+        default: ''
+        type: string
+      topic:
+        description: 'Specific topic (leave empty for AI to decide)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  generate-test-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Cache Python Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          
+          # Install system dependencies for video processing
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg imagemagick
+          
+          # Fix ImageMagick policy for video generation
+          sudo sed -i 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/' /etc/ImageMagick-6/policy.xml || true
+          sudo sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@*"/' /etc/ImageMagick-6/policy.xml || true
+      
+      - name: Restore Persistent State
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: persistent-state
+          path: data/persistent/
+      
+      - name: Generate Test Video
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          echo "=============================================="
+          echo "  TEST VIDEO GENERATION"
+          echo "  Category: ${{ github.event.inputs.category || 'AI decides' }}"
+          echo "  Topic: ${{ github.event.inputs.topic || 'AI decides' }}"
+          echo "=============================================="
+          
+          # Create output directory
+          mkdir -p test_output
+          
+          # Generate exactly ONE video with all enhancements
+          # --count 1: Generate only 1 video
+          # --output-dir: Save to test_output folder
+          # NO upload flags
+          python pro_video_generator.py \
+            --count 1 \
+            --output-dir test_output \
+            --no-upload \
+            --test-mode \
+            ${{ github.event.inputs.category && format('--category "{0}"', github.event.inputs.category) || '' }} \
+            ${{ github.event.inputs.topic && format('--topic "{0}"', github.event.inputs.topic) || '' }}
+          
+          echo ""
+          echo "=============================================="
+          echo "  VIDEO GENERATED!"
+          echo "=============================================="
+          ls -la test_output/
+      
+      - name: Upload Generated Video
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-video-${{ github.run_number }}
+          path: test_output/*.mp4
+          retention-days: 7
+      
+      - name: Upload Video Metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-video-metadata-${{ github.run_number }}
+          path: |
+            test_output/*.json
+            test_output/*.txt
+          retention-days: 7
+      
+      - name: Summary
+        run: |
+          echo "## 🎬 Test Video Generated!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download Your Video" >> $GITHUB_STEP_SUMMARY
+          echo "1. Go to **Actions** → **This workflow run**" >> $GITHUB_STEP_SUMMARY
+          echo "2. Scroll down to **Artifacts**" >> $GITHUB_STEP_SUMMARY
+          echo "3. Download **test-video-${{ github.run_number }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Video Details" >> $GITHUB_STEP_SUMMARY
+          if [ -f test_output/video_metadata.json ]; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat test_output/video_metadata.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Files Generated" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -la test_output/ >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+

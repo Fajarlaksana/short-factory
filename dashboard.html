@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ViralShorts Factory Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 50%, #0f0f23 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 {
+            text-align: center;
+            font-size: 2.5rem;
+            background: linear-gradient(90deg, #ff6b6b, #feca57, #48dbfb);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 30px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }
+        .card h3 {
+            color: #48dbfb;
+            margin-bottom: 16px;
+            font-size: 1.1rem;
+        }
+        .stat {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .stat.green { color: #2ecc71; }
+        .stat.yellow { color: #f39c12; }
+        .stat.red { color: #e74c3c; }
+        .stat.blue { color: #3498db; }
+        .label { color: #999; font-size: 0.9rem; }
+        .modules {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .module {
+            background: rgba(46, 204, 113, 0.2);
+            color: #2ecc71;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+        }
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+            font-size: 0.85rem;
+        }
+        .bar {
+            background: rgba(255, 255, 255, 0.1);
+            height: 8px;
+            border-radius: 4px;
+            margin-top: 12px;
+            overflow: hidden;
+        }
+        .bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+        .bar-fill.green { background: linear-gradient(90deg, #2ecc71, #27ae60); }
+        .bar-fill.blue { background: linear-gradient(90deg, #3498db, #2980b9); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ViralShorts Factory Dashboard</h1>
+        
+        <div class="grid">
+            <div class="card">
+                <h3>Quality Gate</h3>
+                <div class="stat green">100.0%</div>
+                <div class="label">Pass Rate</div>
+                <div class="bar">
+                    <div class="bar-fill green" style="width: 100%"></div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3>Average Score</h3>
+                <div class="stat blue">75.9</div>
+                <div class="label">Out of 100</div>
+                <div class="bar">
+                    <div class="bar-fill blue" style="width: 75.9%"></div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3>Virality Average</h3>
+                <div class="stat yellow">57.0</div>
+                <div class="label">Score</div>
+            </div>
+            
+            <div class="card">
+                <h3>Best Virality</h3>
+                <div class="stat green">81.2</div>
+                <div class="label">Peak Score</div>
+            </div>
+            
+            <div class="card">
+                <h3>Total Checks</h3>
+                <div class="stat blue">1</div>
+                <div class="label">Quality checks run</div>
+            </div>
+            
+            <div class="card">
+                <h3>Active Modules</h3>
+                <div class="stat green">26</div>
+                <div class="label">AI modules</div>
+                <div class="modules">
+                    <span class="module">Hook Gen</span>
+                    <span class="module">CTA Gen</span>
+                    <span class="module">Title Opt</span>
+                    <span class="module">Virality</span>
+                    <span class="module">+22 more</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            Generated: 2026-01-02 21:42:04<br>
+            ViralShorts Factory v17.8.26
+        </div>
+    </div>
+</body>
+</html>

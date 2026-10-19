@@ -1,0 +1,429 @@
+name: ViralShorts Factory - Auto Video Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: 'Videos to generate (1 per workflow = 6/day for YouTube)'
+        required: false
+        default: '1'  # v17.9.7: YouTube-only focus (6 runs/day × 1 video = 6/day)
+      test_only:
+        description: 'Test mode - generate but DO NOT upload (saves quota)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      skip_delay:
+        description: 'Skip random delay (for testing)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+  # v17.9.7: YOUTUBE-ONLY CONFIGURATION
+  # =====================================================
+  # YouTube focus (Dailymotion DISABLED)
+  # LIMITS:
+  #   - YouTube: 6 uploads/day (10,000 units ÷ 1,600)
+  #   - 6 runs/day × 1 video each = 6 videos
+  # =====================================================
+  schedule:
+    - cron: '0 0 * * *'   # 00:00 UTC - Video 1/6
+    - cron: '0 4 * * *'   # 04:00 UTC - Video 2/6
+    - cron: '0 8 * * *'   # 08:00 UTC - Video 3/6
+    - cron: '0 12 * * *'  # 12:00 UTC - Video 4/6
+    - cron: '0 16 * * *'  # 16:00 UTC - Video 5/6
+    - cron: '0 20 * * *'  # 20:00 UTC - Video 6/6
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check API availability (FREE - no quota cost)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          echo "v17.9.12: Checking API availability (FREE endpoints only)..."
+          
+          # Use model INFO endpoint (FREE - no quota cost!)
+          # This just checks if the API is reachable and model exists
+          MAX_RETRIES=3
+          RETRY_DELAY=30
+          
+          for ATTEMPT in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $ATTEMPT of $MAX_RETRIES..."
+            
+            # Check if API is reachable using FREE models list endpoint
+            HTTP_CODE=$(curl -s -w "%{http_code}" -o /tmp/models.json \
+              "https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}" \
+              2>/dev/null || echo "000")
+            
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✓ Gemini API reachable"
+              # Parse available models from response
+              MODELS=$(cat /tmp/models.json | grep -o '"name": "models/[^"]*"' | head -5 | sed 's/"name": "models\///g' | tr -d '"')
+              echo "Available models: $MODELS"
+              echo "GEMINI_AVAILABLE=true" >> $GITHUB_ENV
+              break
+            elif [ "$HTTP_CODE" = "429" ]; then
+              echo "⚠ Rate limited, waiting ${RETRY_DELAY}s before retry..."
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))  # Exponential backoff
+            elif [ "$HTTP_CODE" = "000" ]; then
+              echo "⚠ Network error, waiting ${RETRY_DELAY}s before retry..."
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+              echo "? API returned HTTP $HTTP_CODE, waiting ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+            fi
+          done
+          
+          # After all retries, proceed anyway - Python has its own fallback chain
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::Gemini API check failed, but proceeding - Python has fallback providers"
+            echo "GEMINI_AVAILABLE=false" >> $GITHUB_ENV
+          fi
+          echo "✓ Proceeding with video generation (Python handles provider selection)"
+
+      - name: Smart timing delay (uses learned best posting hours)
+        if: github.event.inputs.skip_delay != 'true'
+        run: |
+          # v17.9.38: SMART TIMING - uses learned best_posting_hours_utc
+          # Base random delay (0-30 min) for stealth
+          BASE_DELAY=$((RANDOM % 1800))
+          
+          # Check if we have learned posting hours from aggressive mode
+          VARIETY_FILE="data/persistent/variety_state.json"
+          CURRENT_HOUR=$(date -u +%H | sed 's/^0//')
+          
+          # Download variety_state to check best hours
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=persistent-state&per_page=1" \
+            | jq -r '.artifacts[0].id' 2>/dev/null || echo "null")
+          
+          OPTIMAL_DELAY=0
+          if [ "$ARTIFACT_ID" != "null" ] && [ -n "$ARTIFACT_ID" ]; then
+            curl -sL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+              -o /tmp/state_check.zip 2>/dev/null
+            unzip -o /tmp/state_check.zip variety_state.json -d /tmp/ 2>/dev/null || true
+            
+            if [ -f "/tmp/variety_state.json" ]; then
+              BEST_HOURS=$(cat /tmp/variety_state.json | grep -o '"best_posting_hours_utc":\s*\[[^]]*\]' | grep -o '\[.*\]' 2>/dev/null || echo "[]")
+              echo "[SMART] Best posting hours: $BEST_HOURS"
+              echo "[SMART] Current UTC hour: $CURRENT_HOUR"
+              
+              # Check if current hour is in best hours
+              if echo "$BEST_HOURS" | grep -q "$CURRENT_HOUR"; then
+                echo "[SMART] ✓ Currently in OPTIMAL posting window!"
+                OPTIMAL_DELAY=0  # No extra delay needed
+              else
+                # Add small delay to move towards better timing
+                OPTIMAL_DELAY=$((RANDOM % 900))  # 0-15 min extra
+                echo "[SMART] Not in optimal window - adding ${OPTIMAL_DELAY}s to shift timing"
+              fi
+            fi
+          fi
+          
+          TOTAL_DELAY=$((BASE_DELAY + OPTIMAL_DELAY))
+          echo "Total delay: ${TOTAL_DELAY}s (base: ${BASE_DELAY}s, timing optimization: ${OPTIMAL_DELAY}s)"
+          sleep $TOTAL_DELAY
+          echo "Starting execution at $(date -u)"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg imagemagick fonts-dejavu-core fonts-liberation
+          sudo sed -i 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/' /etc/ImageMagick-6/policy.xml || true
+          sudo sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@*"/' /etc/ImageMagick-6/policy.xml || true
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check API Health
+        run: |
+          echo "Checking API health..."
+          python api_health_check.py || true
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          DAILYMOTION_API_KEY: ${{ secrets.DAILYMOTION_API_KEY }}
+          DAILYMOTION_API_SECRET: ${{ secrets.DAILYMOTION_API_SECRET }}
+          DAILYMOTION_USERNAME: ${{ secrets.DAILYMOTION_USERNAME }}
+          DAILYMOTION_PASSWORD: ${{ secrets.DAILYMOTION_PASSWORD }}
+        continue-on-error: true
+
+      - name: Create asset directories
+        run: |
+          mkdir -p assets/backgrounds assets/broll assets/music assets/sfx assets/fonts
+          mkdir -p output cache data/persistent
+      
+      # v17.9: Download persistent state via API (reliable cross-workflow)
+      - name: Restore persistent state
+        run: |
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=persistent-state&per_page=1" \
+            | jq -r '.artifacts[0].id')
+          
+          if [ "$ARTIFACT_ID" != "null" ] && [ -n "$ARTIFACT_ID" ]; then
+            curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+              -o /tmp/state.zip
+            unzip -o /tmp/state.zip -d data/persistent/ 2>/dev/null || true
+            echo "[OK] Restored patterns from artifact $ARTIFACT_ID"
+          else
+            echo "[INFO] No previous state found - starting fresh"
+          fi
+        continue-on-error: true
+
+      # v17.9.13: Download pre-generated concepts from Pre-Work workflow
+      - name: Restore pre-generated concepts
+        run: |
+          echo "[INFO] Checking for pre-generated concepts from Pre-Work workflow..."
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=pre-generated-concepts&per_page=1" \
+            | jq -r '.artifacts[0].id')
+          
+          if [ "$ARTIFACT_ID" != "null" ] && [ -n "$ARTIFACT_ID" ]; then
+            # Check if artifact is from today (within 24 hours)
+            CREATED_AT=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID" \
+              | jq -r '.created_at')
+            
+            echo "Pre-work artifact created at: $CREATED_AT"
+            
+            curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+              -o /tmp/prework.zip
+            mkdir -p data
+            unzip -o /tmp/prework.zip -d data/ 2>/dev/null || true
+            
+            if [ -f data/pre_generated_concepts.json ]; then
+              CONCEPT_COUNT=$(python3 -c "import json; d=json.load(open('data/pre_generated_concepts.json')); print(len(d.get('concepts', [])))")
+              echo "[OK] Loaded $CONCEPT_COUNT pre-generated concepts (saves AI quota!)"
+            else
+              echo "[INFO] Pre-work data downloaded but no concepts file found"
+            fi
+          else
+            echo "[INFO] No pre-generated concepts available - will generate fresh (uses more quota)"
+          fi
+        continue-on-error: true
+
+      - name: Pre-fetch some B-roll (optional cache)
+        run: python fetch_broll.py || true
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        continue-on-error: true
+
+      # ====================================================================
+      # v17.9: MAXIMUM QUALITY - 27+ AI Modules Active
+      # - 3-Layer quality gates (pre-gen, post-content, post-render)
+      # - Semantic duplicate detection
+      # - Retention curve prediction
+      # - A/B test tracking
+      # - Error pattern learning
+      # - Voice pacing intelligence
+      # - YouTube: 6/day (max) | Dailymotion: 24/day (rate-aware)
+      # ====================================================================
+      - name: Generate Videos (v17.9.7 - YouTube Focus)
+        run: |
+          # v17.9.7: YouTube-only focus (Dailymotion disabled)
+          # 6 scheduled runs/day × 1 video = 6 videos/day = YouTube daily limit
+          BATCH="${{ github.event.inputs.batch_size }}"
+          BATCH="${BATCH:-1}"  # Default to 1 for YouTube-only strategy
+          TEST_ONLY="${{ github.event.inputs.test_only }}"
+          TEST_ONLY="${TEST_ONLY:-false}"
+          
+          echo "=============================================="
+          echo "   VIRALSHORTS FACTORY v17.9.7"
+          echo "   YOUTUBE-ONLY FOCUS"
+          echo "   Videos: $BATCH per run (6 runs/day)"
+          echo "   Quality: 10 phrases, 50s duration"
+          echo "   Dailymotion: DISABLED"
+          echo "=============================================="
+          
+          if [ "$TEST_ONLY" = "true" ]; then
+            echo "TEST MODE: Generating without uploads"
+            python pro_video_generator.py --count $BATCH --no-upload
+          else
+            echo "PRODUCTION MODE: YouTube upload only"
+            # v17.9.7: YouTube only, no Dailymotion
+            python pro_video_generator.py --count $BATCH --upload --youtube-only
+          fi
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+          DAILYMOTION_PASSWORD: ${{ secrets.DAILYMOTION_PASSWORD }}
+          PYTHONUNBUFFERED: "1"
+
+      - name: Save videos as artifacts (for preview)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-videos
+          path: output/*.mp4
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Verify video generation
+        id: verify
+        run: |
+          echo "Checking for generated videos..."
+          VIDEO_COUNT=$(ls output/*.mp4 2>/dev/null | wc -l)
+          echo "video_count=$VIDEO_COUNT" >> $GITHUB_OUTPUT
+          
+          if [ "$VIDEO_COUNT" -eq 0 ]; then
+            echo "CRITICAL: No videos were generated!"
+            echo "::error::VIDEO GENERATION FAILED - Check logs above for errors"
+            exit 1
+          else
+            echo ""
+            echo "Generated $VIDEO_COUNT video(s)"
+            for f in output/*.mp4; do
+              if [ -f "$f" ]; then
+                SIZE=$(stat --printf="%s" "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
+                SIZE_MB=$((SIZE / 1024 / 1024))
+                echo "   - $f (${SIZE_MB}MB)"
+                ffprobe -v quiet -show_format -show_streams "$f" 2>/dev/null | grep -E "(duration|width|height|bit_rate)" || true
+              fi
+            done
+          fi
+
+      - name: Collect Analytics (Learn from past performance)
+        # v17.9.6: Run analytics even in test mode (uses existing data, generates dashboard)
+        continue-on-error: true
+        run: |
+          echo "Collecting analytics data..."
+          python -c "
+          import os
+          import sys
+          # Add ALL src subdirectories for proper imports
+          sys.path.insert(0, 'src/analytics')
+          sys.path.insert(0, 'src/core')
+          sys.path.insert(0, 'src/enhancements')
+          sys.path.insert(0, 'src/quota')
+          sys.path.insert(0, 'src/utils')
+          sys.path.insert(0, 'src/ai')
+          sys.path.insert(0, 'src/platforms')
+          sys.path.insert(0, 'src')
+          from analytics_feedback import FeedbackLoopController
+          from pro_video_generator import update_learned_metrics_from_performance
+
+          try:
+              controller = FeedbackLoopController()
+              
+              # Fetch latest performance data
+              updated = controller.update_all_performance()
+              print(f'Updated performance for {updated} videos')
+              
+              # v17.9.7: Update learned video metrics from performance
+              all_videos = controller.metadata_store.get_all()
+              for video in all_videos:
+                  if video.performance and video.performance.views > 0:
+                      perf = {
+                          'views': video.performance.views,
+                          'likes': video.performance.likes,
+                          'comments': video.performance.comments,
+                          'avg_watch_percentage': getattr(video.performance, 'avg_watch_percentage', 50)
+                      }
+                      metrics = {
+                          'duration': video.duration,
+                          'phrase_count': video.phrase_count,
+                          'words_per_phrase': 12  # Default if not tracked
+                      }
+                      update_learned_metrics_from_performance(video.video_id, perf, metrics)
+              print('Updated learned video metrics from performance')
+              
+              # Run analysis if we have enough data
+              if len([v for v in all_videos if v.performance]) >= 5:
+                  print('Running AI analysis...')
+                  insights = controller.run_analysis()
+                  if insights.get('key_insight'):
+                      print(f'Key Insight: {insights[\"key_insight\"]}')
+              else:
+                  print('Not enough data for analysis yet (need 5+ videos with views)')
+              
+              # v17.9.6: Generate analytics dashboard
+              try:
+                  from dashboard_generator import DashboardGenerator
+                  dashboard = DashboardGenerator()
+                  html = dashboard.generate_html()  # Fixed: was generate_dashboard()
+                  if html:
+                      with open('data/persistent/dashboard.html', 'w') as f:
+                          f.write(html)
+                      print('Generated analytics dashboard')
+              except Exception as de:
+                  print(f'Dashboard generation skipped: {de}')
+                  
+          except Exception as e:
+              print(f'Analytics error: {e}')
+          "
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
+      # v8.0: Save persistent state for next run
+      - name: Save persistent state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: persistent-state
+          path: data/persistent/
+          retention-days: 30
+          if-no-files-found: ignore
+          overwrite: true
+
+      - name: Summary
+        run: |
+          echo "## ViralShorts Factory v17.8 - MAXIMUM QUALITY" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Time:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "**Videos per run:** ${{ github.event.inputs.batch_size || '1' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Test Mode:** ${{ github.event.inputs.test_only || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### v17.9.7 - YouTube Focus" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platform**: YouTube Shorts ONLY (Dailymotion disabled)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Schedule**: 6 runs/day × 1 video = 6 videos/day" >> $GITHUB_STEP_SUMMARY
+          echo "- **Content**: 10 phrases, 50s duration, full value delivery" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### AI Enhancements Active" >> $GITHUB_STEP_SUMMARY
+          echo "- Dynamic model discovery (Gemini/Groq)" >> $GITHUB_STEP_SUMMARY
+          echo "- Learned optimal video length" >> $GITHUB_STEP_SUMMARY
+          echo "- A/B test tracking for hooks/titles" >> $GITHUB_STEP_SUMMARY
+          echo "- Value delivery verification" >> $GITHUB_STEP_SUMMARY
+          echo "- Rate limiting (4s Gemini, 2.5s Groq)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Schedule (6 runs/day)" >> $GITHUB_STEP_SUMMARY
+          echo "- Every 4 hours: 00, 04, 08, 12, 16, 20 UTC" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY

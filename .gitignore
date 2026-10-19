@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# Secrets - never commit API keys or OAuth tokens
+.env
+.env.local
+client_secrets.json
+*token*.txt
+*_KEYS.txt
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Generated videos and renders
+output/
+latest_videos/
+pro_videos/
+review_videos/
+workflow_output/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*TEMP_MPY*
+
+# Caches and runtime state (downloaded footage, search cache, run history)
+cache/
+data/studio/
+data/persistent/
+data/cache/
+data/logs/
+api_health_status.json
+
+# Downloaded at runtime
+assets/broll/
+assets/backgrounds/*.mp4
+assets/music/**/*.mp3
+assets/sfx/*.mp3
+assets/sfx/*.wav
+assets/music_library/**/*.mp3
+assets/music_library/**/*.wav
+assets/music_library/**/*.m4a
+!assets/backgrounds/.gitkeep
+!assets/sfx/.gitkeep
+
+# Temp files
+*.tmp
+temp_*.mp3
+temp_*.wav
+*.part
+
+# Analyzer output
+workflow_analysis_report.txt
