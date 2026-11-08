@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-07T11:52:59.929227",
-  "valid_until": "2026-11-07T23:59:59.929233",
+  "generated_at": "2026-11-08T12:06:34.610151",
+  "valid_until": "2026-11-08T23:59:34.610158",
   "categories": [
     "ai_trends",
     "productivity",
@@ -14,59 +14,54 @@
   "concepts": [],
   "voice_music_pairs": [
     {
-      "voice": "en-GB-RyanNeural",
-      "rate": "-3%",
-      "music_mood": "dramatic"
-    },
-    {
-      "voice": "en-US-AriaNeural",
+      "voice": "en-US-JennyNeural",
       "rate": "+0%",
       "music_mood": "dramatic"
     },
     {
       "voice": "en-US-ChristopherNeural",
-      "rate": "-3%",
-      "music_mood": "intense"
+      "rate": "+8%",
+      "music_mood": "upbeat"
     },
     {
-      "voice": "en-US-JennyNeural",
+      "voice": "en-US-GuyNeural",
       "rate": "+5%",
       "music_mood": "inspirational"
     },
     {
       "voice": "en-CA-LiamNeural",
-      "rate": "-3%",
-      "music_mood": "inspirational"
-    },
-    {
-      "voice": "en-US-MichelleNeural",
-      "rate": "+5%",
-      "music_mood": "dramatic"
-    },
-    {
-      "voice": "en-US-DavisNeural",
-      "rate": "+8%",
-      "music_mood": "upbeat"
-    },
-    {
-      "voice": "en-GB-RyanNeural",
-      "rate": "+5%",
-      "music_mood": "inspirational"
+      "rate": "+0%",
+      "music_mood": "intense"
     },
     {
       "voice": "en-US-AriaNeural",
+      "rate": "+0%",
+      "music_mood": "upbeat"
+    },
+    {
+      "voice": "en-US-MichelleNeural",
+      "rate": "+0%",
+      "music_mood": "inspirational"
+    },
+    {
+      "voice": "en-GB-RyanNeural",
+      "rate": "-3%",
+      "music_mood": "mysterious"
+    },
+    {
+      "voice": "en-US-JennyNeural",
       "rate": "-3%",
       "music_mood": "inspirational"
     },
     {
       "voice": "en-US-EricNeural",
       "rate": "-3%",
-      "music_mood": "chill"
+      "music_mood": "upbeat"
     },
     {
-      "voice": "en-AU-WilliamNeural",
-      "rate": "-3%",
-      "music_mood": "chill"
+      "voice": "en-US-GuyNeural",
+      "rate": "+5%",
+      "music_mood": "inspirational"
     },
     {
       "voice": "en-CA-LiamNeural",
@@ -74,19 +69,24 @@
       "music_mood": "mysterious"
     },
     {
-      "voice": "en-US-ChristopherNeural",
-      "rate": "+8%",
-      "music_mood": "upbeat"
-    },
-    {
       "voice": "en-US-DavisNeural",
-      "rate": "+8%",
-      "music_mood": "chill"
+      "rate": "+0%",
+      "music_mood": "intense"
     },
     {
       "voice": "en-GB-RyanNeural",
+      "rate": "+8%",
+      "music_mood": "dramatic"
+    },
+    {
+      "voice": "en-US-MichelleNeural",
       "rate": "+5%",
       "music_mood": "inspirational"
+    },
+    {
+      "voice": "en-US-ChristopherNeural",
+      "rate": "-3%",
+      "music_mood": "mysterious"
     }
   ],
   "concepts_used": 0,
