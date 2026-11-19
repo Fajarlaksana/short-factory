@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-18T14:27:56.175260",
-  "valid_until": "2026-11-18T23:59:56.175266",
+  "generated_at": "2026-11-19T14:38:34.888031",
+  "valid_until": "2026-11-19T23:59:34.888038",
   "categories": [
     "ai_trends",
     "productivity",
@@ -14,9 +14,44 @@
   "concepts": [],
   "voice_music_pairs": [
     {
-      "voice": "en-US-ChristopherNeural",
-      "rate": "+8%",
+      "voice": "en-US-EricNeural",
+      "rate": "+5%",
+      "music_mood": "upbeat"
+    },
+    {
+      "voice": "en-US-GuyNeural",
+      "rate": "-3%",
       "music_mood": "inspirational"
+    },
+    {
+      "voice": "en-US-DavisNeural",
+      "rate": "-3%",
+      "music_mood": "dramatic"
+    },
+    {
+      "voice": "en-AU-WilliamNeural",
+      "rate": "+8%",
+      "music_mood": "mysterious"
+    },
+    {
+      "voice": "en-GB-RyanNeural",
+      "rate": "-3%",
+      "music_mood": "mysterious"
+    },
+    {
+      "voice": "en-US-ChristopherNeural",
+      "rate": "+5%",
+      "music_mood": "inspirational"
+    },
+    {
+      "voice": "en-CA-LiamNeural",
+      "rate": "-3%",
+      "music_mood": "dramatic"
+    },
+    {
+      "voice": "en-US-MichelleNeural",
+      "rate": "-3%",
+      "music_mood": "dramatic"
     },
     {
       "voice": "en-US-EricNeural",
@@ -24,39 +59,9 @@
       "music_mood": "upbeat"
     },
     {
-      "voice": "en-US-AriaNeural",
-      "rate": "+8%",
-      "music_mood": "intense"
-    },
-    {
       "voice": "en-US-GuyNeural",
-      "rate": "+5%",
-      "music_mood": "upbeat"
-    },
-    {
-      "voice": "en-AU-WilliamNeural",
-      "rate": "-3%",
+      "rate": "+8%",
       "music_mood": "dramatic"
-    },
-    {
-      "voice": "en-CA-LiamNeural",
-      "rate": "+0%",
-      "music_mood": "inspirational"
-    },
-    {
-      "voice": "en-US-MichelleNeural",
-      "rate": "+5%",
-      "music_mood": "chill"
-    },
-    {
-      "voice": "en-US-JennyNeural",
-      "rate": "+0%",
-      "music_mood": "intense"
-    },
-    {
-      "voice": "en-US-AriaNeural",
-      "rate": "+5%",
-      "music_mood": "upbeat"
     },
     {
       "voice": "en-GB-RyanNeural",
@@ -64,29 +69,24 @@
       "music_mood": "intense"
     },
     {
-      "voice": "en-US-ChristopherNeural",
+      "voice": "en-AU-WilliamNeural",
       "rate": "+5%",
-      "music_mood": "inspirational"
+      "music_mood": "intense"
     },
     {
-      "voice": "en-CA-LiamNeural",
-      "rate": "+0%",
-      "music_mood": "mysterious"
+      "voice": "en-US-ChristopherNeural",
+      "rate": "+8%",
+      "music_mood": "upbeat"
+    },
+    {
+      "voice": "en-US-AriaNeural",
+      "rate": "-3%",
+      "music_mood": "upbeat"
     },
     {
       "voice": "en-US-MichelleNeural",
-      "rate": "-3%",
-      "music_mood": "dramatic"
-    },
-    {
-      "voice": "en-US-JennyNeural",
-      "rate": "+0%",
-      "music_mood": "inspirational"
-    },
-    {
-      "voice": "en-AU-WilliamNeural",
-      "rate": "+8%",
-      "music_mood": "chill"
+      "rate": "+5%",
+      "music_mood": "mysterious"
     }
   ],
   "concepts_used": 0,
